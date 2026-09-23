@@ -1,0 +1,27 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: input
+    id: board
+    attributes:
+      label: Board and firmware
+      placeholder: Raspberry Pi Pico W, MicroPython 1.29.0
+  - type: input
+    id: env
+    attributes:
+      label: OS, Thonny version, AI client
+      placeholder: Windows 11, Thonny 5.0.0, Claude Code
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from Thonny's `frontend.log` / `backend.log` (Help → Show logs folder) and the AI tool output.
+      render: text

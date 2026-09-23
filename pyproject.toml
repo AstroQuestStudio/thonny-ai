@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thonny-ai"
+version = "0.1.0"
+description = "Let AI assistants (Claude Code or any MCP client) drive Thonny and your MicroPython board: visibly, safely, with auto-reconnect."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Mathis Cottereau" }]
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]
+keywords = ["thonny", "micropython", "mcp", "claude", "raspberry-pi-pico", "education", "ai", "esp32"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Plugins",
+    "Framework :: Thonny",
+    "Intended Audience :: Education",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: MicroPython",
+    "Topic :: Education",
+    "Topic :: Software Development :: Embedded Systems",
+]
+
+[project.optional-dependencies]
+test = ["thonny>=4.1"]
+
+[project.scripts]
+thonny-ai-mcp = "thonny_ai_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["thonnycontrib*", "thonny_ai_mcp*"]
+namespaces = true

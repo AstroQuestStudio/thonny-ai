@@ -1,0 +1,24 @@
+name: Hardware report
+description: Results of docs/hardware-testing.md on your board
+labels: [hardware-report]
+body:
+  - type: input
+    id: board
+    attributes:
+      label: Board and firmware
+      placeholder: ESP32-S3, MicroPython 1.29.0
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and Thonny version
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Checklist results
+      description: Paste the checklist with [x] for passing items and notes for failing ones.
+    validations:
+      required: true
