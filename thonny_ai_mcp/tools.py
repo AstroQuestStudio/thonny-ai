@@ -121,7 +121,10 @@ def _remote_hashes(backend, paths):
 
 
 def tool_status(args):
-    st = bridge_status()
+    try:
+        st = bridge_status()
+    except DeviceError as e:
+        return f"{e}\nWait a moment, or check that no dialog is open in Thonny."
     lines = []
     if st:
         lines.append(
@@ -295,7 +298,7 @@ if machine:
         import binascii
         print('unique_id:', binascii.hexlify(machine.unique_id()).decode())
     except Exception: pass
-gc.collect()
+_ = gc.collect()
 if hasattr(gc, 'mem_free'):
     print('ram_free:', gc.mem_free(), 'ram_used:', gc.mem_alloc())
 try:

@@ -1,62 +1,60 @@
+<div align="center">
+
 # thonny-ai
 
+**The MCP server and AI plugin for [Thonny](https://thonny.org).**
+Let Claude Code, Claude Desktop, Cursor or any MCP client program your **Raspberry Pi Pico** and
+**ESP32** in **MicroPython**, visibly, safely and hands-free.
+
 [![tests](https://github.com/AstroQuestStudio/thonny-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/AstroQuestStudio/thonny-ai/actions/workflows/tests.yml)
+[![release](https://img.shields.io/github/v/release/AstroQuestStudio/thonny-ai)](https://github.com/AstroQuestStudio/thonny-ai/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)
 ![MicroPython](https://img.shields.io/badge/MicroPython-Pico%20%7C%20ESP32-2b2728)
 
-**Let an AI assistant drive Thonny and your MicroPython board: visibly, safely, hands-free.**
+![thonny-ai demo: an AI agent drives Thonny, runs code, syncs files and watches a robot loop](docs/img/demo.gif)
 
-thonny-ai is a [Thonny](https://thonny.org) plugin plus an [MCP](https://modelcontextprotocol.io)
-server. Claude Code (or any MCP client) can run code on your Raspberry Pi Pico / ESP32, watch a
-running robot, read and write the board's files and deploy your project. Everything happens
-**inside Thonny's shell, in front of you**, and you can require your approval for every action.
+<sub>Recorded with Thonny's local Python interpreter; with a board connected, the same tools drive MicroPython on the board.</sub>
 
-![AI code in Thonny's shell](docs/img/shell-echo.png)
+</div>
 
-![AI Assistant panel with an approval request](docs/img/approval-panel.png)
+---
 
-## Why
+**thonny-ai** connects AI coding assistants to Thonny, the beginner-friendly Python IDE used in
+many classrooms, and to the MicroPython board plugged into it. The AI can run code on the
+board, read sensors, watch a robot's main loop, manage files and deploy a project. **Every command
+appears in Thonny's shell, in front of you**, and you can require a click to approve each action.
 
-Classroom and hobby MicroPython work happens in Thonny, and AI assistants are good at writing
-MicroPython. What's missing is the link: copy-pasting code into the shell, clicking Stop/Restart
-after every USB hiccup, dragging files onto the board by hand, copying sensor output back to the
-chat. thonny-ai removes that friction without taking the human out of the loop.
+- 🧑‍🏫 **For students and teachers**: the AI's work is visible and reviewable, not hidden in a chat.
+- 🤖 **For makers**: “deploy, run, watch the sensor output, fix, repeat” without copy-paste.
+- 🔌 **For MCP users**: a clean, dependency-free MCP server for real hardware.
 
-## Features
+## Contents
 
-| | |
-|---|---|
-| **Visible AI** | Code sent by the AI appears after `>>>` in Thonny's shell, syntax-highlighted and tinted, exactly as if it had been typed. Teachers and students see every command. |
-| **Human in the loop** | *AI Assistant* panel: log of every action (run, write, delete, sync…). Tick **Approve every AI action** and nothing touches the board until you click *Allow*. |
-| **Long-running programs** | `start` a robot loop or a sensor stream, `monitor` what it prints while it runs, `interrupt` it. The AI can finally debug code that never returns. |
-| **Auto-reconnect** | Replug the board, or survive a USB glitch: Thonny reconnects by itself. No more “Connection lost — use Stop/Restart”. A deliberate *Disconnect* is never undone. |
-| **Smart sync** | `sync` uploads a project folder and only sends files whose SHA-256 changed, then restarts `main.py`. |
-| **Works without Thonny** | When Thonny is closed, the MCP server talks to the board directly over the serial port (MicroPython raw REPL), and can even listen to `main.py` without stopping it. |
-| **One-click setup** | *Tools → Connect Claude Code* registers the MCP server for you. |
-| **Zero extra dependency** | Pure standard library + pyserial (already bundled with Thonny). |
-| **English / Français** | The UI follows Thonny's language. More languages welcome. |
+[Quick start](#quick-start) · [What you can ask](#what-you-can-ask) · [Features](#features) ·
+[Tools](#mcp-tools) · [Compatibility](#compatibility) · [How it works](#how-it-works) ·
+[Security](#security-model) · [FAQ](#faq) · [Contributing](#contributing)
 
 ## Quick start
 
-1. **Install the plugin into Thonny.** In Thonny, open *Tools → Open system shell…* and run:
-   ```
-   pip install git+https://github.com/AstroQuestStudio/thonny-ai
-   ```
-   Or download the ready-made **Thonny-AI portable** (Windows) from
-   [Releases](https://github.com/AstroQuestStudio/thonny-ai/releases): unzip, run `thonny.exe`.
-2. **Restart Thonny.** The *AI Assistant* panel is under *View* (or *Tools → AI Assistant panel*).
-3. **Connect your AI.** Click *Connect Claude Code* in the panel. Other MCP clients: see below.
-4. Talk to your board:
-   > *“Blink the Pico's LED.”*
-   > *“Start a loop that prints the distance from the ultrasonic sensor on GP14/GP15, watch it for
-   > 10 seconds and tell me if the readings are noisy.”*
-   > *“Deploy src/ to the board and check main.py starts without errors.”*
+**Option A: ready-made Thonny (Windows).** Download
+[`Thonny-AI-portable.zip`](https://github.com/AstroQuestStudio/thonny-ai/releases/latest), unzip,
+run `thonny.exe`. Nothing to install.
 
-### Other MCP clients
+**Option B: your existing Thonny.** In Thonny, open *Tools → Open system shell…* and run:
 
-The server runs with Thonny's Python:
+```bash
+pip install git+https://github.com/AstroQuestStudio/thonny-ai
+```
+
+Then restart Thonny, open **View → AI Assistant** and click **Connect Claude Code**. Done: start a
+new Claude Code session (or type `/mcp`) and talk to your board.
+
+<details>
+<summary><b>Claude Desktop, Cursor, VS Code or another MCP client</b></summary>
+
+The server is started with Thonny's own Python (`python -m thonny_ai_mcp`):
 
 ```json
 {
@@ -70,47 +68,164 @@ The server runs with Thonny's Python:
 }
 ```
 
-The same block works for Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`)
-and any client that speaks MCP over stdio.
+- **Claude Desktop**: `claude_desktop_config.json`
+- **Cursor**: `.cursor/mcp.json`
+- **Claude Code** (manual): `claude mcp add thonny-ai -s user -- "C:/path/to/Thonny/python.exe" -m thonny_ai_mcp`
+- Any other client that speaks MCP over stdio works the same way.
 
-## Tools
+On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shell…*, then `which python3`).
+</details>
+
+## What you can ask
+
+> “Blink the Pico W's onboard LED 5 times.”
+>
+> “Read the internal temperature sensor every second for 10 seconds and tell me if it drifts.”
+>
+> “Start `src/main.py` and watch the ultrasonic distance readings. Are they noisy? Suggest a filter.”
+>
+> “Deploy `src/` to the board and check that `main.py` starts without errors.”
+>
+> “What files are on the board, and how much flash is left?”
+>
+> “My motor doesn't turn: check the PWM on GP15, then try duty 50%.”
+
+## Features
+
+| | |
+|---|---|
+| 👀 **Visible AI** | Code sent by the AI appears after `>>>` in Thonny's shell, syntax-highlighted and tinted, exactly as if it had been typed. |
+| ✋ **Human in the loop** | *AI Assistant* panel: a log of every action (run, write, delete, sync…). Tick **Approve every AI action** and nothing touches the board until you click *Allow*. |
+| 🔁 **Long-running programs** | `start` a robot loop or a sensor stream, `monitor` what it prints while it runs, `interrupt` it. The AI can debug code that never returns. |
+| 🔌 **Auto-reconnect** | Replug the board, or survive a USB glitch: Thonny reconnects by itself. No more “Connection lost, use Stop/Restart”. A deliberate *Disconnect* is never undone. |
+| ⚡ **Smart sync** | `sync` uploads a project folder and only sends files whose SHA-256 changed, then restarts `main.py`. |
+| 🧰 **Works without Thonny** | Thonny closed? The MCP server talks to the board over the serial port (MicroPython raw REPL), and can even listen to `main.py` without stopping it. |
+| 🪶 **Zero extra dependency** | Standard library + pyserial, which Thonny already bundles. |
+| 🌍 **English / Français** | The UI follows Thonny's language. More languages welcome. |
+
+![AI code in Thonny's shell](docs/img/shell-echo.png)
+
+![AI Assistant panel asking for approval](docs/img/approval-panel.png)
+
+## MCP tools
 
 | Tool | What it does |
 |---|---|
-| `status` · `info` | How the board is reached (Thonny or serial, port, approval mode) · firmware, CPU, RAM, flash, Wi-Fi |
-| `exec` | Run MicroPython code, return prints and tracebacks (a timeout interrupts runaway loops) |
-| `start` · `monitor` · `interrupt` | Launch a program that runs forever · read its output while it runs · stop it |
+| `status` | How the board is reached right now: through Thonny (interpreter, port, state, approval mode) or direct serial |
+| `info` | Board fact sheet: firmware, CPU MHz, free RAM and flash, unique id, Wi-Fi state, root files |
+| `exec` | Run MicroPython code and return prints and tracebacks; a timeout interrupts runaway loops |
+| `start` | Launch a program that runs forever (robot loop, data logger) without waiting |
+| `monitor` | Read what the running program prints, without stopping it |
+| `interrupt` | Stop the running program (Ctrl-C, escalating to Stop/Restart if needed) |
 | `run_file` | Run a local `.py` file on the board without saving it there |
 | `ls` · `read` · `write` · `rm` | Manage the board's filesystem |
-| `sync` | Upload a folder (default `src/`), only changed files, then soft-reset. `dry_run`, `force` |
-| `reset` | Soft reset (`boot.py` then `main.py`) |
-| `shell` · `open` | Read Thonny's shell (what the user sees) · open a local file in Thonny's editor |
+| `sync` | Upload a folder (default `src/`), only changed files, then soft-reset (`dry_run`, `force`) |
+| `reset` | Soft reset: `boot.py` then `main.py` run again |
+| `shell` | Read Thonny's shell, i.e. what the user sees |
+| `open` | Open a local file in Thonny's editor |
+
+## Compatibility
+
+| | Status |
+|---|---|
+| **Thonny** 4.1+ (tested on 5.0) on Windows, macOS, Linux | ✅ unit tests on all three OS in CI |
+| **Raspberry Pi Pico W**, MicroPython 1.29 | 🟢 early hardware tests passed (exec, files, deploy, through Thonny and serial); full [checklist](docs/hardware-testing.md) in progress |
+| Raspberry Pi Pico / Pico 2 / Pico 2 W, ESP32, ESP32-S3, ESP8266 | 🟡 expected to work (same MicroPython raw REPL). [Send a hardware report](docs/hardware-testing.md) |
+| CircuitPython boards | 🟡 untested. Reports welcome |
+| **Claude Code**, Claude Desktop, Cursor, any MCP stdio client | ✅ standard MCP (protocol 2024-11-05 → 2025-06-18) |
 
 ## How it works
 
-```
-Claude Code ──MCP/stdio──► thonny_ai_mcp ──┬── Thonny running? ──► HTTP 127.0.0.1:47821 ──► thonny-ai plugin ──► Thonny ──► board
-                                           └── Thonny closed   ──► serial raw REPL ─────────────────────────────────────► board
+```mermaid
+flowchart LR
+    AI["AI client<br/>(Claude Code, Cursor…)"] -- "MCP / stdio" --> MCP["thonny_ai_mcp<br/>MCP server"]
+    MCP -- "Thonny open:<br/>HTTP 127.0.0.1:47821" --> P["thonny-ai plugin<br/>inside Thonny"]
+    P --> T["Thonny<br/>shell · panel · approval"]
+    T -- USB --> B[("MicroPython board")]
+    MCP -. "Thonny closed:<br/>serial raw REPL" .-> B
 ```
 
-- A serial port can be opened by one program only. While Thonny is connected it owns the port,
-  so the MCP server goes through Thonny. That is also why everything shows up in its shell.
-- File transfers use Thonny's own backend commands (`write_file` / `read_file`), so they don't
-  clutter the shell.
+- A serial port can only be opened by one program. While Thonny is connected it owns the port, so
+  the MCP server goes through Thonny. That is also why everything shows up in its shell.
+- File transfers use Thonny's own backend commands, so they don't clutter the shell.
 - Each MCP tool call is one **operation**: one approval and one row in the panel, even when it
-  needs many round-trips (for example a `sync` of 20 files).
+  needs many round-trips (a `sync` of 20 files, for example).
 
 ## Security model
 
 - The bridge listens on `127.0.0.1` only.
-- Every request must carry the `X-Thonny-AI: 1` header, and any request with an `Origin` header is
+- Every request must carry the `X-Thonny-AI: 1` header, and requests with an `Origin` header are
   rejected, so web pages open in your browser cannot reach it.
-- With *Approve every AI action* on, code execution and file changes wait for your click (and are
-  denied after 2 minutes without an answer). Read-only actions (`status`, `info`, `ls`, `read`,
-  `monitor`, `shell`) are never blocked.
-- If the user denies an action, the AI gets an explicit “denied by the user” error.
+- With *Approve every AI action* on, code execution and file changes wait for your click, and are
+  denied after 2 minutes without an answer. Read-only actions (`status`, `info`, `ls`, `read`,
+  `monitor`, `shell`) never wait.
+- When you deny an action, the AI receives an explicit “denied by the user” error.
 
-Found a problem? See [SECURITY.md](SECURITY.md).
+Found a problem? Please report it privately, see [SECURITY.md](SECURITY.md).
+
+## FAQ
+
+<details>
+<summary><b>Is there an MCP server for Thonny?</b></summary>
+
+Yes: thonny-ai. It ships a Thonny plugin and an MCP server (`python -m thonny_ai_mcp`) that lets any
+MCP client drive Thonny and the MicroPython board connected to it.
+</details>
+
+<details>
+<summary><b>Can Claude Code program a Raspberry Pi Pico or an ESP32?</b></summary>
+
+Yes. With thonny-ai, Claude Code can run MicroPython on the board (`exec`), deploy a project
+(`sync`), start a long-running program and read its output live (`start` + `monitor`), and manage
+files, while you watch everything in Thonny.
+</details>
+
+<details>
+<summary><b>Will the AI run code on my board without me knowing?</b></summary>
+
+No. Its code is echoed in Thonny's shell and every action is logged in the *AI Assistant* panel. Turn
+on *Approve every AI action* to allow or deny each action before it runs.
+</details>
+
+<details>
+<summary><b>Do I need to keep Thonny open?</b></summary>
+
+No. When Thonny is closed, the MCP server connects to the board over USB serial by itself. Keeping
+Thonny open gives you the visual log, the approval gate and auto-reconnect.
+</details>
+
+<details>
+<summary><b>How is this different from mpremote or rshell?</b></summary>
+
+mpremote and rshell are command-line tools for humans and scripts. thonny-ai is built for AI agents
+working next to a human: MCP tools with structured results, long-running program monitoring, and
+visibility and approval inside the IDE students already use. They work well side by side.
+</details>
+
+<details>
+<summary><b>Which AI models or clients are supported?</b></summary>
+
+Any client that supports MCP over stdio: Claude Code, Claude Desktop, Cursor, VS Code with MCP, and
+more. The model itself runs in your client. thonny-ai only runs locally.
+</details>
+
+<details>
+<summary><b>Is it suitable for a classroom?</b></summary>
+
+That is what it was designed for: everything the AI does is visible in the shell, logged in a panel,
+and can require the student's (or teacher's) approval. It is MIT-licensed and free.
+</details>
+
+## Why not just copy-paste into a chatbot?
+
+| | Copy-paste with a chatbot | CLI tools (mpremote…) | **thonny-ai** |
+|---|---|---|---|
+| AI runs code and reads the real output | ❌ you relay it | ⚠️ only through a shell tool | ✅ |
+| Watch a running robot loop | ❌ | ⚠️ manual | ✅ `start` / `monitor` |
+| Visible in the IDE, reviewable | ❌ | ❌ | ✅ |
+| Approve each action | ❌ | ❌ | ✅ |
+| Auto-reconnect after unplugging | ❌ | ❌ | ✅ |
+| Beginner-friendly (Thonny) | ✅ | ❌ | ✅ |
 
 ## Configuration
 
@@ -119,7 +234,7 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 | Approve every AI action | AI Assistant panel | off |
 | Auto-reconnect the board | AI Assistant panel | on |
 | Bridge port | `thonny_ai.port` in Thonny's configuration / `THONNY_AI_PORT` for the MCP server | 47821 |
-| Project folder for relative paths | `THONNY_AI_PROJECT` | MCP server working directory |
+| Folder for relative paths | `THONNY_AI_PROJECT` | MCP server working directory |
 | Disable serial fallback | `THONNY_AI_SERIAL_FALLBACK=0` | enabled |
 | Force a serial port | `THONNY_AI_SERIAL_PORT=COM3` | auto-detect |
 
@@ -127,39 +242,44 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 
 ```bash
 python -m pip install -e ".[test]"
-PYTHONPATH=tests python -m unittest discover -s tests -v   # 51 tests, no board needed
+PYTHONPATH=tests python -m unittest discover -s tests -v   # 54 tests, no board needed
 python tests/e2e_thonny.py /path/to/thonny.exe             # 21 steps in a real Thonny window
 python bundle/build_portable.py thonny-X.Y.Z-windows-portable.zip
 ```
 
-The unit tests use a fake board (sandboxed filesystem) and a fake serial port that speaks the
-MicroPython raw REPL protocol. The end-to-end script opens a real Thonny with its local Python
-interpreter and drives it through the MCP tools. Real-board behaviour is checked with the
-[hardware checklist](docs/hardware-testing.md).
+The unit tests use a fake board (sandboxed filesystem) and a fake serial port speaking the
+MicroPython raw REPL protocol. The end-to-end script drives a real Thonny through the MCP tools.
+Real-board behaviour is checked with the [hardware checklist](docs/hardware-testing.md).
 
 ## Contributing
 
-Contributions are very welcome, from a translation to a new tool. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md). Hardware reports for boards other than the Pico W are
-especially useful.
+Contributions are very welcome, from a translation to a new tool: see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[good first issues](https://github.com/AstroQuestStudio/thonny-ai/labels/good%20first%20issue).
+Hardware reports for boards other than the Pico W are especially useful.
 
 ## Roadmap
 
 - [ ] PyPI release and listing in Thonny's plugin manager
-- [ ] Wi-Fi (WebREPL) connection, for robots that can't stay on a USB cable
-- [ ] Plotter and variables snapshot tools for the AI
+- [ ] Wi-Fi (WebREPL): drive robots that can't stay on a USB cable
+- [ ] Plotter and variable snapshots for the AI
 - [ ] More UI languages
-- [ ] Demo GIF
 
 ## Français
 
 thonny-ai permet à un assistant IA (Claude Code ou tout client MCP) de piloter Thonny et ta carte
-MicroPython : le code de l'IA s'affiche dans la console Thonny comme s'il était tapé, chaque action
-peut être soumise à ta validation, l'IA peut lancer un programme qui tourne en boucle et lire ce
-qu'il affiche, et Thonny se reconnecte tout seul quand on rebranche la carte. L'interface est en
-français si Thonny est en français.
+MicroPython (Raspberry Pi Pico, ESP32). Le code de l'IA s'affiche dans la console Thonny comme s'il
+était tapé, chaque action peut être soumise à ta validation, l'IA peut lancer un programme qui tourne
+en boucle (un robot) et lire ce qu'il affiche en direct, et Thonny se reconnecte tout seul quand on
+rebranche la carte. L'interface est en français si Thonny est en français.
 
-## License
+---
 
-MIT © Mathis Cottereau. Not affiliated with the Thonny project; thonny-ai is a third-party plugin
+<div align="center">
+
+If thonny-ai saves you time, a ⭐ helps other students and makers find it.
+
+MIT © Mathis Cottereau · Not affiliated with the Thonny project: thonny-ai is a third-party plugin
 built on Thonny's public plugin interface.
+
+</div>

@@ -148,6 +148,20 @@ class ThonnyHost:
         text.see("end")
 
     @staticmethod
+    def _squash_empty_prompt():
+        """A silent execution leaves an empty '>>>' line above the fresh prompt: remove it."""
+        try:
+            text = get_shell().text
+            ranges = text.tag_ranges("prompt")
+            if len(ranges) < 4:
+                return
+            prev_start, prev_end, last_start = ranges[-4], ranges[-3], ranges[-2]
+            if text.get(prev_end, last_start).strip() == "":
+                text.direct_delete(prev_start, last_start)
+        except Exception:
+            pass  # cosmetic only
+
+    @staticmethod
     def configure_ai_tag():
         text = get_shell().text
         r, g, b = (c // 256 for c in text.winfo_rgb(text.cget("background")))
@@ -216,7 +230,12 @@ class ThonnyHost:
             finished = current["done"].wait(timeout)
             self._exec = None
             if quiet:
-                self.main.call(lambda: get_shell().set_ignore_program_output(False))
+
+                def unmute():
+                    get_shell().set_ignore_program_output(False)
+                    self._squash_empty_prompt()
+
+                self.main.call(unmute)
             return {
                 "finished": finished,
                 "stdout": "".join(d for s, d in current["out"] if s != "stderr"),

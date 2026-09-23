@@ -281,6 +281,31 @@ class ThonnyBackendTest(unittest.TestCase):
     def test_status_sees_thonny(self):
         self.assertIn("Thonny is open", text(call("status")))
 
+    def test_busy_thonny_is_not_mistaken_for_closed(self):
+        real_status = self.host.status
+
+        def slow_status():
+            import time
+
+            time.sleep(1.5)
+            return real_status()
+
+        self.host.status = slow_status
+        self.assertIsInstance(backends.open_backend({"id": "slow"}), backends.ThonnyBackend)
+
+    def test_thonny_object_links_are_stripped(self):
+        self.host.exec_code = lambda *a, **k: {
+            "finished": True,
+            "stdout": "[object_link_for_thonny=1690299465936]42[/object_link_for_thonny]\n",
+            "stderr": "",
+            "error": None,
+        }
+        self.assertEqual(text(call("exec", code="6*7")), "(via thonny)\n42\n")
+
+    def test_closed_thonny_means_serial(self):
+        with mock.patch.object(backends, "BRIDGE_URL", "http://127.0.0.1:9"):
+            self.assertIsNone(backends.bridge_status())
+
     def test_exec_goes_through_thonny_and_is_logged(self):
         result = call("exec", code="print(6*7)")
         self.assertIn("(via thonny)", text(result))

@@ -126,14 +126,15 @@ class ThonnyAIView(ttk.Frame):
 
         columns = ("time", "action", "detail", "status")
         self._tree = ttk.Treeview(self, columns=columns, show="headings", height=8)
+        # small base widths: "detail" stretches, so the status column stays visible in a narrow panel
         for col, width, stretch in (
-            ("time", 70, False),
-            ("action", 100, False),
-            ("detail", 320, True),
-            ("status", 100, False),
+            ("time", 64, False),
+            ("action", 96, False),
+            ("detail", 140, True),
+            ("status", 90, False),
         ):
             self._tree.heading(col, text=t(f"col_{col}"))
-            self._tree.column(col, width=width, stretch=stretch)
+            self._tree.column(col, width=width, minwidth=width if not stretch else 60, stretch=stretch)
         self._tree.pack(fill="both", expand=True, padx=6, pady=(4, 6))
         self._tree.bind("<Double-1>", self._show_details)
 

@@ -8,7 +8,7 @@ from thonny import get_shell, get_workbench
 from .core import DEFAULT_PORT, BridgeCore, start_server
 from .i18n import t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 logger = logging.getLogger(__name__)
 
 

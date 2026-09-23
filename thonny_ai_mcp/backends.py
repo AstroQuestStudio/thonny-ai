@@ -9,8 +9,11 @@
 import base64
 import json
 import os
+import re
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BRIDGE_PORT = int(os.environ.get("THONNY_AI_PORT", "47821"))
@@ -48,12 +51,36 @@ def bridge_request(path, payload=None, timeout=5.0):
     return body
 
 
-def bridge_status():
-    """Thonny status dict, or None when Thonny (with the plugin) is not running."""
+def _bridge_listening():
+    port = urllib.parse.urlparse(BRIDGE_URL).port
     try:
-        return bridge_request("/status", timeout=0.8)
-    except (urllib.error.URLError, OSError, DeviceError, ValueError):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def bridge_status():
+    """Thonny status dict, or None when Thonny (with the plugin) is not running.
+
+    A Thonny that is running but momentarily busy must not be mistaken for a closed one
+    (that would silently switch to the serial port), hence the separate listening check."""
+    if not _bridge_listening():
         return None
+    try:
+        return bridge_request("/status", timeout=15)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        if not _bridge_listening():
+            return None
+        raise DeviceError(f"Thonny is open but not responding ({e})")
+
+
+_OBJECT_LINK = re.compile(r"\[object_link_for_thonny=[^\]]*\](.*?)\[/object_link_for_thonny\]", re.S)
+
+
+def _clean(text):
+    """Thonny wraps REPL values in object-inspector links: keep only the value."""
+    return _OBJECT_LINK.sub(r"\1", text)
 
 
 class ThonnyBackend:
@@ -76,7 +103,7 @@ class ThonnyBackend:
             raise DeviceError(r["error"])
         if not r["finished"]:
             self.ensure_idle()
-        return r["stdout"], r["stderr"], r["finished"]
+        return _clean(r["stdout"]), _clean(r["stderr"]), r["finished"]
 
     def start(self, code, echo_text=None):
         ThonnyBackend.cursor = self._post(
@@ -88,7 +115,7 @@ class ThonnyBackend:
             "/monitor", {"seconds": seconds, "since": ThonnyBackend.cursor}, timeout=seconds + 15
         )
         ThonnyBackend.cursor = r["cursor"]
-        return r["stdout"], r["stderr"], r["running"]
+        return _clean(r["stdout"]), _clean(r["stderr"]), r["running"]
 
     def write_file(self, path, data):
         self._post(

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 — 2026-09-23
+
+- Fix: a Thonny that is open but briefly busy is no longer mistaken for a closed one (which made
+  the MCP server fall back to the serial port).
+- Fix: values echoed by Thonny's local Python no longer contain Thonny's internal object-link markup.
+- Fix: silent operations (file listing, sync…) no longer leave empty `>>>` lines in the shell.
+- Fix: the *Status* column of the AI Assistant panel stays visible when the panel is narrow.
+- Docs: demo GIF, FAQ, compatibility table, `llms.txt` for AI assistants.
+
 ## 0.1.0 — 2026-09-23
 
 First release.
