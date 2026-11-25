@@ -8,10 +8,11 @@ Every key is optional::
       "ignore": ["*.md", "tests/*"],      # glob patterns skipped by `sync` (and protected from `delete`)
       "safe_stop": "import motors; motors.stop()",   # MicroPython run after anything that stops a program
       "safe_stop_file": "safe_stop.py",   # alternative: a local file with that code
-      "max_output": 20000                 # characters returned to the AI by one call
+      "max_output": 20000,                # characters returned to the AI by one call
+      "baremetal": {"toolchain_dir": "../pico-toolchain"}
     }
 
-`THONNY_AI_SAFE_CODE` and `THONNY_AI_MAX_OUTPUT` override the file.
+`THONNY_AI_SAFE_CODE`, `THONNY_AI_MAX_OUTPUT` and `THONNY_AI_TOOLCHAIN` override the file.
 """
 
 import ipaddress

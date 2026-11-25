@@ -90,5 +90,5 @@ def load_plugin():
         logger.warning("thonny-ai: port %s unavailable (%s)", port, e)
         controller.system_event(t("port_busy", port=port, error=e))
 
-    ReconnectWatcher(on_event=controller.system_event)
+    ReconnectWatcher(on_event=controller.system_event, suspended=lambda: core.host.baremetal)
     wb.after(300, _configure_shell_tag)

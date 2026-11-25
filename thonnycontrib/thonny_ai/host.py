@@ -59,6 +59,7 @@ class ThonnyHost:
     def __init__(self):
         self.main = MainThread(get_workbench())
         self._exec_lock = threading.Lock()
+        self.baremetal = False
         self._exec = None  # running execution: {"id", "out", "done", "error", "quiet"}
         self._waiters = {}  # inline command id -> {"done", "msg"}
         # every program output (AI or user), numbered, for `monitor`
@@ -78,9 +79,13 @@ class ThonnyHost:
         wb.bind("ToplevelResponse", self._on_toplevel_response, True)
         wb.bind("InlineResponse", self._on_inline_response, True)
         wb.bind("BackendTerminated", self._on_terminated, True)
+        wb.bind("BackendRestart", self._on_backend_restart, True)
         wb.after(WATCHDOG_POLL_MS, self._watchdog_tick)
 
     # ------------------------------------------------------------ Thonny events
+
+    def _on_backend_restart(self, event):
+        self.baremetal = False
 
     def _on_command_accepted(self, event):
         command = event.command
@@ -93,6 +98,7 @@ class ThonnyHost:
         self._load_watchdog_config(self._watchdog_dirs)
         self._watchdog_command = command.id
         self.watchdog.begin()
+
     def subscribe_output(self, listener):
         """Subscribe to visible program output on the Tk thread; return an unsubscribe callback."""
         self._output_listeners.add(listener)
@@ -271,6 +277,7 @@ class ThonnyHost:
             "backend_description": getattr(spec, "description", backend),
             "port": getattr(proxy, "_port", None) or wb.get_option(f"{backend}.port"),
             "connected": self._connected(proxy),
+            "baremetal": self.baremetal,
             "state": runner.get_state(),
             "current_editor_file": editor.get_filename() if editor else None,
             "watchdog_enabled": self.watchdog.enabled,
@@ -437,6 +444,29 @@ class ThonnyHost:
 
     def restart(self):
         self.main.call(lambda: get_runner().cmd_stop_restart())
+
+    def claim_baremetal(self, port):
+        def fn():
+            runner = get_runner()
+            proxy = runner.get_backend_proxy()
+            selected = self.status_now()["port"]
+            if not selected or selected == "webrepl":
+                return
+            if proxy is not None and selected != "auto" and str(selected).casefold() != port.casefold():
+                raise BridgeError(f"Thonny is using {selected}. Disconnect it before switching this Pico.")
+            self.baremetal = True
+            if proxy is not None:
+                runner.destroy_backend()
+
+        self.main.call(fn)
+
+    def resume_micropython(self):
+        def fn():
+            if self.baremetal:
+                self.baremetal = False
+                get_runner().restart_backend(clean=True, automatic=True)
+
+        self.main.call(fn)
 
     def shell_text(self, max_chars):
         return self.main.call(lambda: get_shell().text.get("1.0", "end-1c")[-max_chars:])

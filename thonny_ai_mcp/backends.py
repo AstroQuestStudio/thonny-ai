@@ -391,6 +391,16 @@ class SerialBackend(RawReplBackend):
             raise DeviceError(f"{self.port} is busy ({e}). Close the program using it, or open Thonny.")
         super().__init__(self.ser, passive=passive)
 
+    def reboot_to_bootsel(self):
+        """Submit the reboot without waiting for a raw REPL reply from a detached USB port."""
+        from serial import SerialException
+
+        self.ser.write(b"import machine; machine.bootloader()")
+        try:
+            self.ser.write(b"\x04")
+        except SerialException:
+            pass  # The caller checks whether BOOTSEL actually appeared.
+
 
 # ---------------------------------------------------------------- selection
 
@@ -403,6 +413,10 @@ def transport_mode():
 
 
 def _open_thonny(op, st):
+    if st.get("baremetal"):
+        if op.get("kind") in ("shell", "open"):
+            return ThonnyBackend(op)
+        raise DeviceError("Thonny released the Pico for bare metal. Use bm_console or bm_restore_micropython.")
     if op.get("kind") == "telemetry":  # read-only: never restart Thonny just to listen
         if not st.get("connected"):
             raise DeviceError("Thonny is open but its interpreter is disconnected")

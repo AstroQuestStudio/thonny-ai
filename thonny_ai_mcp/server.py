@@ -31,7 +31,9 @@ def handle(request):
                 "machine.Pin('LED'). Robots: call `stop` first if anything misbehaves (it also runs the "
                 "project's safe_stop code from .thonny-ai.json); use `monitor` with `until` to wait for a "
                 "line instead of sleeping; `pull` saves what is on the board; `i2c_scan` and `gpio` check "
-                "wiring. If an action is denied, the user refused it in Thonny: do not retry blindly, "
+                "wiring. For Pico C/C++, use bm_doctor, bm_new, bm_build, bm_flash, bm_console, "
+                "then bm_restore_micropython. Flashing replaces firmware. "
+                "If an action is denied, the user refused it in Thonny: do not retry blindly, "
                 "ask them."
             ),
         }

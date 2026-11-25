@@ -15,8 +15,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULT_PORT = 47821
 PROTOCOL_VERSION = 1
 READ_ONLY_KINDS = frozenset(
-    {"status", "info", "ls", "read", "shell", "open", "monitor", "watchdog_status", "telemetry"}
+    {"status", "info", "ls", "read", "shell", "open", "monitor", "watchdog_status", "telemetry", "bm_console"}
 )
+BAREMETAL_KINDS = frozenset({"bm_flash", "bm_console", "bm_restore_micropython"})
 # Actions that only make the robot safer: never held up waiting for an approval click.
 ALWAYS_ALLOWED_KINDS = frozenset({"stop", "interrupt"})
 APPROVAL_TIMEOUT = 120.0
@@ -33,6 +34,8 @@ OP_PATHS = frozenset(
         "/shell",
         "/open",
         "/watchdog",
+        "/bm_claim",
+        "/bm_resume",
     }
 )
 
@@ -91,6 +94,7 @@ class BridgeCore:
         self._order = []
         self._lock = threading.Lock()
         self._listeners = []
+        self._baremetal_op = None
 
     # ------------------------------------------------------------ activity log
 
@@ -159,9 +163,25 @@ class BridgeCore:
 
     def finish(self, meta, ok, result):
         op = self._get_or_create_op(meta)
+        with self._lock:
+            if self._baremetal_op and self._baremetal_op[0] == op.id:
+                self._baremetal_op = None
         op.status = "done" if ok else "failed"
         op.result = str(result or "")[:2000]
         self._emit("update", op)
+
+    def _claim_baremetal(self, op, port):
+        if op.kind not in BAREMETAL_KINDS:
+            raise BridgeError("Expected a bare-metal operation")
+        with self._lock:
+            if self._baremetal_op and self._baremetal_op[1] > time.monotonic():
+                raise BridgeError("Another bare-metal operation is in progress")
+            self._baremetal_op = (op.id, time.monotonic() + 360)
+        try:
+            self.host.claim_baremetal(port)
+        except Exception as e:
+            self.finish({"id": op.id}, False, str(e))
+            raise
 
     # ------------------------------------------------------------ routing
 
@@ -209,6 +229,16 @@ class BridgeCore:
         self.authorize(op)
         host = self.host
 
+        if path == "/bm_claim":
+            self._claim_baremetal(op, args.get("port", ""))
+            return {}
+        if path == "/bm_resume":
+            with self._lock:
+                owned = self._baremetal_op and self._baremetal_op[0] == op.id
+            if op.kind != "bm_restore_micropython" or not owned:
+                raise BridgeError("Can only resume Thonny after an active MicroPython restore")
+            host.resume_micropython()
+            return {}
         if path == "/exec":
             return host.exec_code(
                 args["code"],

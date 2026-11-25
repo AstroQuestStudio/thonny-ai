@@ -29,8 +29,9 @@ def _list_ports():
 
 
 class ReconnectWatcher:
-    def __init__(self, on_event=lambda text: None):
+    def __init__(self, on_event=lambda text: None, suspended=lambda: False):
         self._on_event = on_event
+        self._suspended = suspended
         self._previous = None
         self._lost = False
         self._retries = 0
@@ -42,7 +43,7 @@ class ReconnectWatcher:
         wb.after(1000, self._tick)
 
     def _enabled(self):
-        return get_workbench().get_option("thonny_ai.auto_reconnect", True)
+        return not self._suspended() and get_workbench().get_option("thonny_ai.auto_reconnect", True)
 
     def _on_output(self, msg):
         if "Connection lost" in (getattr(msg, "data", "") or ""):

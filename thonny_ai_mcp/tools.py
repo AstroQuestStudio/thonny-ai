@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 
-from . import config
+from . import baremetal, config
 from .backends import (
     DeviceError,
     bridge_request,
@@ -818,6 +818,36 @@ _NUM = {"type": "number"}
 _BOOL = {"type": "boolean"}
 
 TOOLS = {
+    "bm_doctor": (
+        baremetal.doctor,
+        "Check the portable Pico C/C++ toolchain, connected USB device mode, and install commands.",
+        _schema(),
+    ),
+    "bm_new": (
+        baremetal.new,
+        "Generate a Pico SDK C blink project with a USB serial console.",
+        _schema({"name": _STR, "board": {"enum": list(baremetal.BOARDS)}, "directory": _STR}, ["name"]),
+    ),
+    "bm_build": (
+        baremetal.build,
+        "Configure and build a Pico SDK project directory with CMake and Ninja. Returns UF2 paths.",
+        _schema({"path": _STR, "board": {"enum": list(baremetal.BOARDS)}}, ["path"]),
+    ),
+    "bm_flash": (
+        baremetal.flash,
+        "Replace firmware on the single connected Pico with a compatible local UF2, then wait for reboot.",
+        _schema({"path": _STR, "method": {"enum": ["auto", "copy", "picotool"]}}, ["path"]),
+    ),
+    "bm_console": (
+        baremetal.console,
+        "Read Pico SDK USB serial output without transmitting. Optionally stop on an until regex.",
+        _schema({"seconds": {"type": "number", "default": 5, "maximum": MAX_TIMEOUT}, "until": _STR}),
+    ),
+    "bm_restore_micropython": (
+        baremetal.restore,
+        "Replace firmware with official MicroPython for Pico W or Pico 2 W and verify the raw REPL.",
+        _schema({"board": {"enum": list(baremetal.BOARDS)}}),
+    ),
     "status": (
         tool_status,
         "How the board is reached right now: Thonny open/connected (interpreter, port, state, "
@@ -1006,6 +1036,12 @@ TOOLS = {
 # MCP tool annotations (hints for clients: what may be auto-approved, what deserves a warning).
 # (title, readOnly, destructive). "destructive" = can overwrite or delete something.
 ANNOTATIONS = {
+    "bm_doctor": ("Check Pico C/C++ toolchain", True, False),
+    "bm_new": ("Create a Pico SDK project", False, False),
+    "bm_build": ("Build Pico firmware", False, False),
+    "bm_flash": ("Flash Pico firmware", False, True),
+    "bm_console": ("Read the Pico C console", True, False),
+    "bm_restore_micropython": ("Restore MicroPython firmware", False, True),
     "status": ("Connection status", True, False),
     "wifi_setup": ("Set up Wi-Fi over USB", False, True),
     "info": ("Board information", False, False),

@@ -20,7 +20,10 @@ MAX_ROWS = 500
 BOARD_POLL_MS = 1500
 
 # Actions that change the board (or its pins): the approval card warns about them.
-WRITE_KINDS = frozenset({"exec", "start", "run_file", "write", "rm", "sync", "gpio", "reset"})
+WRITE_KINDS = frozenset({
+    "exec", "start", "run_file", "write", "rm", "sync", "gpio", "reset",
+    "bm_flash", "bm_restore_micropython",
+})
 
 # Colours readable on both light and dark Thonny themes (used for text only, never as backgrounds).
 LIGHT = {
