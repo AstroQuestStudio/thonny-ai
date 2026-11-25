@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT_PORT = 47821
 PROTOCOL_VERSION = 1
-READ_ONLY_KINDS = frozenset({"status", "info", "ls", "read", "shell", "open", "monitor"})
+READ_ONLY_KINDS = frozenset({"status", "info", "ls", "read", "shell", "open", "monitor", "telemetry"})
 # Actions that only make the robot safer: never held up waiting for an approval click.
 ALWAYS_ALLOWED_KINDS = frozenset({"stop", "interrupt"})
 APPROVAL_TIMEOUT = 120.0

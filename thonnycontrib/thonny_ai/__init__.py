@@ -34,6 +34,7 @@ def load_plugin():
     from .host import ThonnyHost
     from .panel import VIEW_ID, Controller, ThonnyAIView
     from .reconnect import ReconnectWatcher
+    from .telemetry_view import VIEW_ID as TELEMETRY_VIEW_ID, TelemetryView
 
     wb = get_workbench()
     wb.set_default("thonny_ai.require_approval", False)
@@ -41,10 +42,13 @@ def load_plugin():
     wb.set_default("thonny_ai.port", DEFAULT_PORT)
     port = int(wb.get_option("thonny_ai.port"))
 
-    core = BridgeCore(ThonnyHost(), require_approval=lambda: wb.get_option("thonny_ai.require_approval"))
+    host = ThonnyHost()
+    core = BridgeCore(host, require_approval=lambda: wb.get_option("thonny_ai.require_approval"))
     controller = Controller(core, port)
     ThonnyAIView.controller = controller
+    TelemetryView.host = host
     wb.add_view(ThonnyAIView, t("view_title"), "se")
+    wb.add_view(TelemetryView, t("telemetry_title"), "s")
     wb.add_command(
         "thonny_ai_connect_claude",
         "tools",
@@ -64,6 +68,13 @@ def load_plugin():
         "tools",
         t("menu_panel"),
         lambda: wb.show_view(VIEW_ID),
+        group=180,
+    )
+    wb.add_command(
+        "thonny_ai_show_telemetry",
+        "tools",
+        t("telemetry_title"),
+        lambda: wb.show_view(TELEMETRY_VIEW_ID),
         group=180,
     )
 
