@@ -65,15 +65,23 @@ class StopHost(FakeHost):
         self.executed = []
         self.exec_result = {"finished": True, "stdout": "", "stderr": "", "error": None}
         self.interrupt_error = None
+        self.watchdog_enabled = True
 
-    def interrupt(self):
+    def interrupt(self, expected_proxy=None):
         if self.interrupt_error:
             raise self.interrupt_error
         self.interrupted += 1
 
-    def exec_code(self, code, timeout, echo=False, quiet=False, echo_text=None):
+    def exec_code(
+        self, code, timeout, echo=False, quiet=False, echo_text=None, watchdog=True, expected_proxy=None
+    ):
         self.executed.append(code)
         return self.exec_result
+
+    def watchdog_request_now(self, action, settings):
+        if action in ("on", "off"):
+            self.watchdog_enabled = action == "on"
+        return {"enabled": self.watchdog_enabled}
 
     def status_now(self):
         return {
@@ -82,6 +90,7 @@ class StopHost(FakeHost):
             "port": "COM3",
             "connected": True,
             "state": "waiting_toplevel_command",
+            "watchdog_enabled": self.watchdog_enabled,
         }
 
 
@@ -194,6 +203,13 @@ class EmergencyStopTest(unittest.TestCase):
         self.assertIn("Emergency stop failed", summaries[-1])
         self.assertEqual(self.host.executed, [])
 
+    def test_safe_stop_timeout_is_shown_as_failure(self):
+        write_config(self.tmp.name, safe_stop="motors.stop()")
+        self.host.exec_result["finished"] = False
+        summaries, statuses = self.run_stop()
+        self.assertIn("did not finish within 10 s", summaries[-1])
+        self.assertEqual(statuses[-1], "failed")
+
 
 def make_root():
     try:
@@ -290,6 +306,15 @@ class ViewTest(unittest.TestCase):
         self.assertIn("COM3", text)
         self.assertIn("connected", text)
         self.assertIn("ready", text)
+
+    def test_watchdog_checkbox_updates_host_and_reflects_remote_changes(self):
+        watchdog_button = self.view._options_row.winfo_children()[-1]
+        self.assertTrue(self.view._watchdog_enabled.get())
+        watchdog_button.invoke()
+        self.assertFalse(self.host.watchdog_enabled)
+        self.host.watchdog_request_now("on", {})
+        self.view._poll_board()
+        self.assertTrue(self.view._watchdog_enabled.get())
 
     def test_board_line_survives_a_failing_host(self):
         with mock.patch.object(self.host, "status_now", side_effect=RuntimeError("boom")):

@@ -13,7 +13,7 @@ from thonny import get_workbench
 
 from . import mcp_setup
 from .i18n import t
-from .safety import find_safe_stop
+from .safety import find_safe_stop, project_dirs
 
 VIEW_ID = "ThonnyAIView"
 MAX_ROWS = 500
@@ -172,26 +172,23 @@ class Controller:
     # ------------------------------------------------------------ emergency stop
 
     def _project_dirs(self):
-        dirs = []
-        try:
-            editor = get_workbench().get_editor_notebook().get_current_editor()
-            filename = editor.get_filename() if editor else None
-            if filename:
-                dirs.append(os.path.dirname(filename))
-        except Exception:
-            pass
-        dirs.append(os.getcwd())
-        return dirs
+        return project_dirs(get_workbench())
 
-    def emergency_stop(self):
+    def watchdog_triggered(self, event, dirs, proxy):
+        reason = event["reason"]
+        self.system_event(t(f"watchdog_{reason}", **event), "failed")
+        if reason != "disconnect":
+            self.emergency_stop(dirs, expected_proxy=proxy)
+
+    def emergency_stop(self, dirs=None, expected_proxy=None):
         """Interrupts the program, then runs the project's safe-stop code (motors off)."""
-        dirs = self._project_dirs()
+        dirs = self._project_dirs() if dirs is None else dirs
         self.system_event(t("stop_running"), "failed")
         host = self.core.host
 
         def work():
             try:
-                host.interrupt()
+                host.interrupt(expected_proxy=expected_proxy)
             except Exception as e:
                 self.system_event(t("stop_failed", error=e), "failed")
                 return
@@ -202,7 +199,8 @@ class Controller:
             time.sleep(0.4)
             try:
                 result = host.exec_code(
-                    code, 10.0, echo=True, quiet=False, echo_text="# ⛔ safe stop (thonny-ai)"
+                    code, 10.0, echo=True, quiet=False, echo_text="# ⛔ safe stop (thonny-ai)",
+                    watchdog=False, expected_proxy=expected_proxy,
                 )
             except Exception as e:
                 self.system_event(t("stop_done") + " " + t("stop_safe_failed", error=e), "failed")
@@ -210,6 +208,8 @@ class Controller:
             if result.get("stderr", "").strip() or result.get("error"):
                 error = (result.get("stderr", "").strip() or str(result.get("error"))).splitlines()[-1]
                 self.system_event(t("stop_done") + " " + t("stop_safe_failed", error=error), "failed")
+            elif not result["finished"]:
+                self.system_event(t("stop_done") + " " + t("stop_safe_timed_out"), "failed")
             else:
                 self.system_event(t("stop_done") + " " + t("stop_safe_ran", source=os.path.basename(source)), "done")
 
@@ -329,6 +329,18 @@ class ThonnyAIView(ttk.Frame):
             text=t("auto_reconnect"),
             variable=self._wb.get_variable("thonny_ai.auto_reconnect"),
         ).pack(side="left", padx=(12, 0))
+        watchdog = self._ctrl.core.host.watchdog_request_now("status", {})
+        self._watchdog_enabled = tk.BooleanVar(self, value=watchdog["enabled"])
+        ttk.Checkbutton(
+            self._options_row,
+            text=t("watchdog"),
+            variable=self._watchdog_enabled,
+            command=self._toggle_watchdog,
+        ).pack(side="left", padx=(12, 0))
+
+    def _toggle_watchdog(self):
+        action = "on" if self._watchdog_enabled.get() else "off"
+        self._ctrl.core.host.watchdog_request_now(action, {})
 
     def _build_approval(self):
         self._approval = tk.Frame(self, highlightthickness=2, highlightbackground=self._colors["warn"])
@@ -405,6 +417,7 @@ class ThonnyAIView(ttk.Frame):
         text, color = t("board_none"), c["idle"]
         try:
             st = self._ctrl.core.host.status_now()
+            self._watchdog_enabled.set(st["watchdog_enabled"])
             name = st.get("backend_description") or st.get("backend") or "?"
             port = st.get("port") or ""
             if st.get("connected"):
@@ -494,11 +507,15 @@ class ThonnyAIView(ttk.Frame):
             return
         op = pending[0]
         more = t("more_pending", n=len(pending) - 1) if len(pending) > 1 else ""
-        writes = op.kind in WRITE_KINDS
-        color = self._colors["bad"] if writes else self._colors["approved"]
+        risk = "risk_read"
+        if op.kind == "watchdog":
+            risk = "risk_watchdog"
+        elif op.kind in WRITE_KINDS:
+            risk = "risk_write"
+        color = self._colors["approved"] if risk == "risk_read" else self._colors["bad"]
         self._approval.configure(highlightbackground=color)
         self._approval_label.configure(text=f"{t('kind.' + op.kind)} : {op.summary}{more}")
-        self._approval_risk.configure(text=t("risk_write" if writes else "risk_read"), fg=color)
+        self._approval_risk.configure(text=t(risk), fg=color)
         self._approval_detail.configure(state="normal")
         self._approval_detail.delete("1.0", "end")
         self._approval_detail.insert("1.0", op.detail or op.summary)

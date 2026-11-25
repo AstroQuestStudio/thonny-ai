@@ -9,11 +9,14 @@ import base64
 import json
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT_PORT = 47821
 PROTOCOL_VERSION = 1
-READ_ONLY_KINDS = frozenset({"status", "info", "ls", "read", "shell", "open", "monitor"})
+READ_ONLY_KINDS = frozenset(
+    {"status", "info", "ls", "read", "shell", "open", "monitor", "watchdog_status"}
+)
 # Actions that only make the robot safer: never held up waiting for an approval click.
 ALWAYS_ALLOWED_KINDS = frozenset({"stop", "interrupt"})
 APPROVAL_TIMEOUT = 120.0
@@ -29,6 +32,7 @@ OP_PATHS = frozenset(
         "/restart",
         "/shell",
         "/open",
+        "/watchdog",
     }
 )
 
@@ -161,6 +165,28 @@ class BridgeCore:
 
     # ------------------------------------------------------------ routing
 
+    def _handle_watchdog(self, args):
+        action = args.get("action", "status")
+        if action not in ("status", "on", "off", "configure"):
+            raise BridgeError("watchdog action must be status, on, off or configure")
+        settings = {name: value for name, value in args.items() if name not in ("action", "op")}
+        # A client-supplied operation must not turn a settings change into an approved read or stop.
+        meta = {
+            "id": uuid.uuid4().hex,
+            "kind": "watchdog_status" if action == "status" else "watchdog",
+            "summary": f"Watchdog · {action}",
+            "detail": json.dumps(settings, ensure_ascii=False) if settings else "",
+        }
+        op = self._get_or_create_op(meta)
+        self.authorize(op)
+        try:
+            result = self.host.watchdog_request(action, settings)
+        except Exception as e:
+            self.finish(meta, False, e)
+            raise
+        self.finish(meta, True, json.dumps(result, ensure_ascii=False))
+        return result
+
     def handle(self, method, path, args):
         if method == "GET" and path == "/status":
             return {
@@ -177,6 +203,8 @@ class BridgeCore:
 
         if path not in OP_PATHS:
             raise UnknownEndpoint(path)
+        if path == "/watchdog":
+            return self._handle_watchdog(args)
         op = self._get_or_create_op(args.get("op"))
         self.authorize(op)
         host = self.host
