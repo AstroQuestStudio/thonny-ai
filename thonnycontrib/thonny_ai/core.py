@@ -9,11 +9,17 @@ import base64
 import json
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT_PORT = 47821
 PROTOCOL_VERSION = 1
-READ_ONLY_KINDS = frozenset({"status", "info", "ls", "read", "shell", "open", "monitor"})
+READ_ONLY_KINDS = frozenset(
+    {"status", "info", "ls", "read", "shell", "open", "monitor", "watchdog_status", "telemetry", "bm_console"}
+)
+BAREMETAL_KINDS = frozenset({"bm_flash", "bm_console", "bm_restore_micropython"})
+# Actions that only make the robot safer: never held up waiting for an approval click.
+ALWAYS_ALLOWED_KINDS = frozenset({"stop", "interrupt"})
 APPROVAL_TIMEOUT = 120.0
 MAX_KEPT_OPS = 300
 OP_PATHS = frozenset(
@@ -27,6 +33,9 @@ OP_PATHS = frozenset(
         "/restart",
         "/shell",
         "/open",
+        "/watchdog",
+        "/bm_claim",
+        "/bm_resume",
     }
 )
 
@@ -56,6 +65,10 @@ class Operation:
     def read_only(self):
         return self.kind in READ_ONLY_KINDS
 
+    @property
+    def always_allowed(self):
+        return self.kind in ALWAYS_ALLOWED_KINDS
+
     def decide(self, allowed, reason=""):
         if self._decided.is_set():
             return
@@ -81,6 +94,7 @@ class BridgeCore:
         self._order = []
         self._lock = threading.Lock()
         self._listeners = []
+        self._baremetal_op = None
 
     # ------------------------------------------------------------ activity log
 
@@ -123,7 +137,7 @@ class BridgeCore:
 
     def authorize(self, op):
         if op.allowed is None:
-            if op.read_only or self.session_trust or not self.require_approval():
+            if op.read_only or op.always_allowed or self.session_trust or not self.require_approval():
                 op.auto_approved = True
                 op.decide(True)
                 self._emit("update", op)
@@ -149,11 +163,49 @@ class BridgeCore:
 
     def finish(self, meta, ok, result):
         op = self._get_or_create_op(meta)
+        with self._lock:
+            if self._baremetal_op and self._baremetal_op[0] == op.id:
+                self._baremetal_op = None
         op.status = "done" if ok else "failed"
         op.result = str(result or "")[:2000]
         self._emit("update", op)
 
+    def _claim_baremetal(self, op, port):
+        if op.kind not in BAREMETAL_KINDS:
+            raise BridgeError("Expected a bare-metal operation")
+        with self._lock:
+            if self._baremetal_op and self._baremetal_op[1] > time.monotonic():
+                raise BridgeError("Another bare-metal operation is in progress")
+            self._baremetal_op = (op.id, time.monotonic() + 360)
+        try:
+            self.host.claim_baremetal(port)
+        except Exception as e:
+            self.finish({"id": op.id}, False, str(e))
+            raise
+
     # ------------------------------------------------------------ routing
+
+    def _handle_watchdog(self, args):
+        action = args.get("action", "status")
+        if action not in ("status", "on", "off", "configure"):
+            raise BridgeError("watchdog action must be status, on, off or configure")
+        settings = {name: value for name, value in args.items() if name not in ("action", "op")}
+        # A client-supplied operation must not turn a settings change into an approved read or stop.
+        meta = {
+            "id": uuid.uuid4().hex,
+            "kind": "watchdog_status" if action == "status" else "watchdog",
+            "summary": f"Watchdog · {action}",
+            "detail": json.dumps(settings, ensure_ascii=False) if settings else "",
+        }
+        op = self._get_or_create_op(meta)
+        self.authorize(op)
+        try:
+            result = self.host.watchdog_request(action, settings)
+        except Exception as e:
+            self.finish(meta, False, e)
+            raise
+        self.finish(meta, True, json.dumps(result, ensure_ascii=False))
+        return result
 
     def handle(self, method, path, args):
         if method == "GET" and path == "/status":
@@ -171,10 +223,22 @@ class BridgeCore:
 
         if path not in OP_PATHS:
             raise UnknownEndpoint(path)
+        if path == "/watchdog":
+            return self._handle_watchdog(args)
         op = self._get_or_create_op(args.get("op"))
         self.authorize(op)
         host = self.host
 
+        if path == "/bm_claim":
+            self._claim_baremetal(op, args.get("port", ""))
+            return {}
+        if path == "/bm_resume":
+            with self._lock:
+                owned = self._baremetal_op and self._baremetal_op[0] == op.id
+            if op.kind != "bm_restore_micropython" or not owned:
+                raise BridgeError("Can only resume Thonny after an active MicroPython restore")
+            host.resume_micropython()
+            return {}
         if path == "/exec":
             return host.exec_code(
                 args["code"],

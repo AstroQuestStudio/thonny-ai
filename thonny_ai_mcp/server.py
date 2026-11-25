@@ -5,7 +5,7 @@ import json
 import sys
 
 from . import __version__
-from .tools import TOOLS
+from .tools import TOOLS, annotations_for
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -24,12 +24,17 @@ def handle(request):
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "thonny-ai", "version": __version__},
             "instructions": (
-                "Tools to drive a MicroPython board (e.g. Raspberry Pi Pico W) through Thonny. "
+                "Tools to drive a MicroPython board (e.g. Raspberry Pi Pico W) over Thonny, USB, or Wi-Fi. "
                 "Start with `status` or `info`. Use `exec` for short experiments, `start` + "
                 "`monitor` + `interrupt` for programs that loop forever, and `sync` to deploy a "
                 "project folder (then `monitor` to watch main.py). On a Pico W the onboard LED is "
-                "machine.Pin('LED'). If an action is denied, the user refused it in Thonny: do not "
-                "retry blindly, ask them."
+                "machine.Pin('LED'). Robots: call `stop` first if anything misbehaves (it also runs the "
+                "project's safe_stop code from .thonny-ai.json); use `monitor` with `until` to wait for a "
+                "line instead of sleeping; `pull` saves what is on the board; `i2c_scan` and `gpio` check "
+                "wiring. For Pico C/C++, use bm_doctor, bm_new, bm_build, bm_flash, bm_console, "
+                "then bm_restore_micropython. Flashing replaces firmware. "
+                "If an action is denied, the user refused it in Thonny: do not retry blindly, "
+                "ask them."
             ),
         }
     if method == "ping":
@@ -37,7 +42,13 @@ def handle(request):
     if method == "tools/list":
         return {
             "tools": [
-                {"name": name, "description": desc, "inputSchema": schema}
+                {
+                    "name": name,
+                    "title": annotations_for(name)["title"],
+                    "description": desc,
+                    "inputSchema": schema,
+                    "annotations": annotations_for(name),
+                }
                 for name, (_, desc, schema) in TOOLS.items()
             ]
         }

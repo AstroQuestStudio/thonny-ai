@@ -1,12 +1,7 @@
-"""Two ways to reach the board:
-
-- ThonnyBackend: through the thonny-ai plugin running inside Thonny (preferred: everything is
-  visible in Thonny's shell and can require the user's approval);
-- SerialBackend: straight to the serial port with MicroPython's raw REPL, used only when
-  Thonny is not running (a serial port can be opened by one program at a time).
-"""
+"""Reach MicroPython through Thonny, USB serial, or Wi-Fi WebREPL."""
 
 import base64
+import codecs
 import json
 import os
 import re
@@ -16,9 +11,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import config
+
 BRIDGE_PORT = int(os.environ.get("THONNY_AI_PORT", "47821"))
 BRIDGE_URL = f"http://127.0.0.1:{BRIDGE_PORT}"
-SERIAL_CHUNK = 1024
+FILE_CHUNK = 1024
 READY_STATE = "waiting_toplevel_command"
 
 
@@ -89,6 +86,7 @@ class ThonnyBackend:
 
     def __init__(self, op):
         self.op = op
+        self._telemetry_cursor = None
 
     def _post(self, path, payload=None, timeout=15.0):
         return bridge_request(path, {**(payload or {}), "op": self.op}, timeout)
@@ -111,10 +109,16 @@ class ThonnyBackend:
         )["cursor"]
 
     def monitor(self, seconds):
+        # Telemetry starts at the current log head and leaves the monitor cursor alone.
+        telemetry = self.op.get("kind") == "telemetry"
+        since = self._telemetry_cursor if telemetry else ThonnyBackend.cursor
         r = self._post(
-            "/monitor", {"seconds": seconds, "since": ThonnyBackend.cursor}, timeout=seconds + 15
+            "/monitor", {"seconds": seconds, "since": since}, timeout=seconds + 15
         )
-        ThonnyBackend.cursor = r["cursor"]
+        if telemetry:
+            self._telemetry_cursor = r["cursor"]
+        else:
+            ThonnyBackend.cursor = r["cursor"]
         return _clean(r["stdout"]), _clean(r["stderr"]), r["running"]
 
     def write_file(self, path, data):
@@ -172,10 +176,10 @@ class ThonnyBackend:
         pass
 
 
-# ---------------------------------------------------------------- direct serial
+# ---------------------------------------------------------------- raw REPL
 
 KNOWN_VIDS = {0x2E8A, 0x1209, 0x239A, 0x10C4, 0x1A86, 0x0403, 0x303A, 0x0D28}
-_session = None  # SerialBackend kept open while a started program runs
+_session = None  # Direct backend kept open while a started program runs
 
 
 def find_board_port():
@@ -191,81 +195,84 @@ def find_board_port():
     return None
 
 
-class SerialBackend:
+class RawReplBackend:
     """MicroPython raw REPL. Output of a running program is framed as
     `OK <stdout> \\x04 <stderr> \\x04 >`, which lets `monitor` stream it."""
 
-    name = "serial"
-
-    def __init__(self, passive=False):
+    def __init__(self, stream, passive=False):
         """passive=True only listens to the board's console: the running program is not
         interrupted (used by `monitor` to watch main.py running on its own)."""
-        import serial
-
-        port = os.environ.get("THONNY_AI_SERIAL_PORT") or find_board_port()
-        if not port:
-            raise DeviceError("no MicroPython board found on USB. Is it plugged in?")
-        try:
-            self.ser = serial.Serial(port, 115200, timeout=0.05)
-        except serial.SerialException as e:
-            raise DeviceError(f"{port} is busy ({e}). Close the program using it, or open Thonny.")
-        self.port = port
+        self._stream = stream
         self.passive = passive
         self.running = False
+        self._raw = False
         self._phase = None
         self._pending = b""
-        if not passive:
-            self._enter_raw_repl()
+        self._console_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        try:
+            if not passive:
+                self._enter_raw_repl()
+        except BaseException:
+            self.close(force=True)
+            raise
 
     def listen(self, seconds):
-        deadline = time.time() + seconds
-        data = b""
-        while time.time() < deadline:
-            data += self.ser.read(512)
-        return data.decode("utf-8", "replace")
+        deadline = time.monotonic() + seconds
+        data = bytearray()
+        while time.monotonic() < deadline:
+            data.extend(self._stream.read(512))
+        return self._console_decoder.decode(data)
 
     def _read_until(self, marker, timeout):
-        buf = b""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            buf += self.ser.read(512)
+        buf = bytearray()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            buf.extend(self._stream.read(512))
             if marker in buf:
-                return buf
-        raise TimeoutError(buf)
+                return bytes(buf)
+        raise TimeoutError
 
     def _enter_raw_repl(self):
-        self.ser.write(b"\r\x03\x03")
+        self._stream.write(b"\r\x03\x03")
         time.sleep(0.2)
-        self.ser.reset_input_buffer()
-        self.ser.write(b"\r\x01")
+        self._stream.reset_input_buffer()
+        self._stream.write(b"\r\x01")
         try:
             self._read_until(b"raw REPL; CTRL-B to exit\r\n>", 3)
         except TimeoutError:
-            raise DeviceError("the board does not answer the raw REPL (is MicroPython flashed?)")
+            raise DeviceError("the board does not answer the raw REPL (is MicroPython flashed?)") from None
+        self._raw = True
         self.running = False
 
     def start(self, code, echo_text=None):
         data = code.encode("utf-8")
-        for i in range(0, len(data), 256):
-            self.ser.write(data[i : i + 256])
+        start = 0
+        while start < len(data):
+            end = min(start + 256, len(data))
+            # WebSocket text frames must end at a UTF-8 code point boundary.
+            while end < len(data) and data[end] & 0xC0 == 0x80:
+                end -= 1
+            self._stream.write(data[start:end])
             time.sleep(0.01)
-        self.ser.write(b"\x04")
+            start = end
+        self._stream.write(b"\x04")
         try:
             buf = self._read_until(b"OK", 3)
         except TimeoutError:
-            raise DeviceError("the board did not accept the code")
+            raise DeviceError("the board did not accept the code") from None
         self.running = True
         self._phase = "out"
         self._pending = buf[buf.index(b"OK") + 2 :]
+        self._decoders = {phase: codecs.getincrementaldecoder("utf-8")("replace") for phase in ("out", "err")}
 
     def monitor(self, seconds):
-        out, err = b"", b""
-        deadline = time.time() + seconds
+        output = {"out": [], "err": []}
+        deadline = time.monotonic() + seconds
         while self.running:
             if self._pending:
                 chunk, self._pending = self._pending, b""
-            elif time.time() < deadline:
-                chunk = self.ser.read(512)
+            elif time.monotonic() < deadline:
+                chunk = self._stream.read(512)
                 if not chunk:
                     continue
             else:
@@ -273,17 +280,14 @@ class SerialBackend:
             while chunk and self.running:
                 if self._phase in ("out", "err"):
                     head, sep, chunk = chunk.partition(b"\x04")
-                    if self._phase == "out":
-                        out += head
-                    else:
-                        err += head
+                    output[self._phase].append(self._decoders[self._phase].decode(head, final=bool(sep)))
                     if sep:
                         self._phase = "err" if self._phase == "out" else "prompt"
                 elif self._phase == "prompt":
                     if b">" in chunk:
                         self.running = False
                     chunk = b""
-        return out.decode("utf-8", "replace"), err.decode("utf-8", "replace"), self.running
+        return "".join(output["out"]), "".join(output["err"]), self.running
 
     def exec(self, code, timeout=10.0, echo=False, quiet=True, echo_text=None):
         self.start(code)
@@ -306,8 +310,8 @@ class SerialBackend:
     def write_file(self, path, data):
         self._run(f"_f=open({path!r},'wb')")
         try:
-            for i in range(0, len(data), SERIAL_CHUNK):
-                self._run(f"_f.write({data[i : i + SERIAL_CHUNK]!r})")
+            for i in range(0, len(data), FILE_CHUNK):
+                self._run(f"_f.write({data[i : i + FILE_CHUNK]!r})")
         finally:
             self._run("_f.close()")
 
@@ -323,7 +327,7 @@ class SerialBackend:
         return bytes.fromhex("".join(self._run(code, 90).split()))
 
     def interrupt(self):
-        self.ser.write(b"\x03")
+        self._stream.write(b"\x03")
 
     def ensure_idle(self):
         """Stops a program started with `start`. Returns True if one was running."""
@@ -336,10 +340,11 @@ class SerialBackend:
         return True
 
     def reset(self):
-        self.running = False
-        self.ser.write(b"\x02")
+        self.ensure_idle()
+        self._stream.write(b"\x02")
+        self._raw = False
         time.sleep(0.1)
-        self.ser.write(b"\x04")
+        self._stream.write(b"\x04")
 
     def shell(self, max_chars):
         raise DeviceError("Thonny is not running: its shell is unavailable")
@@ -351,7 +356,7 @@ class SerialBackend:
         pass
 
     def close(self, force=False):
-        """Releases the port, unless a started program is still running (kept for monitor)."""
+        """Release the transport unless a started program is still running."""
         global _session
         if self.running and not force:
             _session = self
@@ -359,28 +364,63 @@ class SerialBackend:
         if _session is self:
             _session = None
         try:
-            if not self.passive:
-                self.ser.write(b"\x02")
-            self.ser.close()
+            if self._raw:
+                self._stream.write(b"\x02")
         except Exception:
             pass
+        finally:
+            self._raw = False
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+
+
+class SerialBackend(RawReplBackend):
+    name = "serial"
+
+    def __init__(self, passive=False, port=None):
+        import serial
+
+        self.port = port or os.environ.get("THONNY_AI_SERIAL_PORT") or find_board_port()
+        if not self.port:
+            raise DeviceError("no MicroPython board found on USB. Is it plugged in?")
+        try:
+            self.ser = serial.Serial(self.port, 115200, timeout=0.05)
+        except serial.SerialException as e:
+            raise DeviceError(f"{self.port} is busy ({e}). Close the program using it, or open Thonny.")
+        super().__init__(self.ser, passive=passive)
+
+    def reboot_to_bootsel(self):
+        """Submit the reboot without waiting for a raw REPL reply from a detached USB port."""
+        from serial import SerialException
+
+        self.ser.write(b"import machine; machine.bootloader()")
+        try:
+            self.ser.write(b"\x04")
+        except SerialException:
+            pass  # The caller checks whether BOOTSEL actually appeared.
 
 
 # ---------------------------------------------------------------- selection
 
 
-def open_backend(op, passive=False):
-    """Thonny when it is running (reconnecting it if it lost the board), serial otherwise."""
-    global _session
-    st = bridge_status()
-    if st is None:
-        if os.environ.get("THONNY_AI_SERIAL_FALLBACK", "1") == "0":
-            raise DeviceError("Thonny is not running and the serial fallback is disabled")
-        if _session is not None:
-            return _session
-        return SerialBackend(passive=passive)
-    if _session is not None:  # Thonny was opened: hand the port over to it
-        _session.close(force=True)
+def transport_mode():
+    mode = os.environ.get("THONNY_AI_TRANSPORT", "auto")
+    if mode not in ("auto", "usb", "wifi"):
+        raise DeviceError("THONNY_AI_TRANSPORT must be auto, usb, or wifi.")
+    return mode
+
+
+def _open_thonny(op, st):
+    if st.get("baremetal"):
+        if op.get("kind") in ("shell", "open"):
+            return ThonnyBackend(op)
+        raise DeviceError("Thonny released the Pico for bare metal. Use bm_console or bm_restore_micropython.")
+    if op.get("kind") == "telemetry":  # read-only: never restart Thonny just to listen
+        if not st.get("connected"):
+            raise DeviceError("Thonny is open but its interpreter is disconnected")
+        return ThonnyBackend(op)
     if st.get("connected"):
         return ThonnyBackend(op)
     backend = ThonnyBackend(op)
@@ -395,3 +435,46 @@ def open_backend(op, passive=False):
         "Thonny is open but cannot reconnect to the board. Check the cable, "
         "then click Stop/Restart in Thonny."
     )
+
+
+def probe_webrepl(settings):
+    """Check WebREPL login without entering raw REPL or interrupting a program."""
+    if getattr(_session, "endpoint", None) == (settings.host, settings.port):
+        return
+    from .webrepl import connect
+
+    connect(settings, timeout=1.0).close()
+
+
+def open_backend(op, passive=False, *, transport=None):
+    """Auto selects Thonny, USB, then WebREPL. Reuse any running direct session."""
+    mode = transport if transport is not None else transport_mode()
+    st = bridge_status() if mode == "auto" else None
+    usb_enabled = mode == "usb" or os.environ.get("THONNY_AI_SERIAL_FALLBACK", "1") != "0"
+
+    if _session is not None:
+        if st is None and (
+            (_session.name == "serial" and usb_enabled and mode != "wifi")
+            or (_session.name == "wifi" and mode != "usb")
+        ):
+            return _session
+        _session.close(force=True)
+    if st is not None:
+        return _open_thonny(op, st)
+    if mode != "wifi" and usb_enabled:
+        port = os.environ.get("THONNY_AI_SERIAL_PORT") or find_board_port()
+        if port:
+            return SerialBackend(passive=passive, port=port)
+        if mode == "usb":
+            raise DeviceError("no MicroPython board found on USB. Is it plugged in?")
+
+    settings = config.webrepl_settings()
+    if settings.host:
+        from .webrepl import WebReplBackend
+
+        return WebReplBackend(settings, passive=passive)
+    if mode == "wifi":
+        raise DeviceError("Set THONNY_AI_WEBREPL_HOST or webrepl.host to use Wi-Fi.")
+    if not usb_enabled:
+        raise DeviceError("Thonny is not running, the serial fallback is disabled, and Wi-Fi is not configured.")
+    raise DeviceError("no MicroPython board found on USB and Wi-Fi is not configured")

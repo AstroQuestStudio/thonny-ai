@@ -1,6 +1,7 @@
 """Adapter between the bridge and Thonny. Tk is not thread-safe: every access to
 Thonny goes through the main loop via MainThread.call()."""
 
+import logging
 import queue
 import threading
 import time
@@ -10,9 +11,14 @@ from thonny import get_runner, get_shell, get_workbench
 from thonny.common import InlineCommand, ToplevelCommand
 
 from .core import BridgeError
+from .safety import find_watchdog_config, project_dirs
+from .watchdog import Watchdog
 
 AI_TAG = "thonny_ai_command"
 LOG_MAX_ENTRIES = 5000
+WATCHDOG_POLL_MS = 100
+PROGRAM_COMMANDS = {"Run", "run", "Debug", "debug", "FastDebug", "fast_debug", "execute_source"}
+logger = logging.getLogger(__name__)
 
 
 class MainThread:
@@ -53,19 +59,50 @@ class ThonnyHost:
     def __init__(self):
         self.main = MainThread(get_workbench())
         self._exec_lock = threading.Lock()
+        self.baremetal = False
         self._exec = None  # running execution: {"id", "out", "done", "error", "quiet"}
         self._waiters = {}  # inline command id -> {"done", "msg"}
         # every program output (AI or user), numbered, for `monitor`
         self._log = []
         self._seq = 0
         self._log_lock = threading.Lock()
+        self.watchdog = Watchdog(self._on_watchdog_trigger)
+        self.on_watchdog_trigger = lambda event, dirs, proxy: None
+        self.on_watchdog_config_error = lambda error: None
+        self._watchdog_command = None
+        self._watchdog_dirs = []
+        self._watchdog_config_error = None
+        self._output_listeners = set()
         wb = get_workbench()
+        wb.bind("CommandAccepted", self._on_command_accepted, True)
         wb.bind("ProgramOutput", self._on_output, True)
         wb.bind("ToplevelResponse", self._on_toplevel_response, True)
         wb.bind("InlineResponse", self._on_inline_response, True)
         wb.bind("BackendTerminated", self._on_terminated, True)
+        wb.bind("BackendRestart", self._on_backend_restart, True)
+        wb.after(WATCHDOG_POLL_MS, self._watchdog_tick)
 
     # ------------------------------------------------------------ Thonny events
+
+    def _on_backend_restart(self, event):
+        self.baremetal = False
+
+    def _on_command_accepted(self, event):
+        command = event.command
+        if not isinstance(command, ToplevelCommand) or command.name not in PROGRAM_COMMANDS:
+            return
+        current = self._exec
+        if current is not None and command.id == current["id"] and not current["watchdog"]:
+            return
+        self._watchdog_dirs = project_dirs(get_workbench())
+        self._load_watchdog_config(self._watchdog_dirs)
+        self._watchdog_command = command.id
+        self.watchdog.begin()
+
+    def subscribe_output(self, listener):
+        """Subscribe to visible program output on the Tk thread; return an unsubscribe callback."""
+        self._output_listeners.add(listener)
+        return lambda: self._output_listeners.discard(listener)
 
     def _append_log(self, stream, data):
         with self._log_lock:
@@ -73,6 +110,11 @@ class ThonnyHost:
             self._log.append((self._seq, stream, data))
             if len(self._log) > LOG_MAX_ENTRIES:
                 del self._log[: len(self._log) - LOG_MAX_ENTRIES]
+        for listener in tuple(self._output_listeners):
+            try:
+                listener(stream, data)
+            except Exception:
+                logger.exception("Program output listener failed")
 
     def _on_output(self, msg):
         stream = getattr(msg, "stream_name", "stdout")
@@ -81,6 +123,7 @@ class ThonnyHost:
             current["out"].append((stream, msg.data))
         if current is None or not current["quiet"]:
             self._append_log(stream, msg.data)
+        self._watchdog_output(stream, msg.data)
 
     def _on_toplevel_response(self, msg):
         # the local CPython backend reports tracebacks here instead of on stderr
@@ -96,6 +139,9 @@ class ThonnyHost:
             if trace:
                 current["out"].append(("stderr", trace))
             current["done"].set()
+        if self.watchdog.running and msg.get("command_id") in (self._watchdog_command, None):
+            self._watchdog_output("stderr", trace)
+            self.watchdog.end()
 
     def _on_inline_response(self, msg):
         waiter = self._waiters.pop(msg.get("command_id"), None)
@@ -113,8 +159,51 @@ class ThonnyHost:
             waiter["msg"] = {"error": reason}
             waiter["done"].set()
         self._waiters.clear()
+        self.watchdog.disconnected()
+
+    def _on_watchdog_trigger(self, event):
+        proxy = None if event["reason"] == "disconnect" else get_runner().get_backend_proxy()
+        self.on_watchdog_trigger(event, self._watchdog_dirs, proxy)
+
+    def _watchdog_output(self, stream, data):
+        if self.watchdog.running and data:
+            if self._connected(get_runner().get_backend_proxy()):
+                self.watchdog.output(stream, data)
+            else:
+                self.watchdog.disconnected()
+
+    def _watchdog_tick(self):
+        try:
+            if self.watchdog.running:
+                runner = get_runner()
+                if not self._connected(runner.get_backend_proxy()):
+                    self.watchdog.disconnected()
+                else:
+                    self.watchdog.tick(paused=not runner.is_running())
+        finally:
+            get_workbench().after(WATCHDOG_POLL_MS, self._watchdog_tick)
+
+    def _load_watchdog_config(self, dirs):
+        error = None
+        try:
+            self.watchdog.load_project(find_watchdog_config(dirs))
+        except ValueError as e:
+            error = str(e)
+        if error is not None and error != self._watchdog_config_error:
+            self.on_watchdog_config_error(error)
+        self._watchdog_config_error = error
 
     # ------------------------------------------------------------ helpers (main thread)
+
+    @staticmethod
+    def _connected(proxy):
+        return proxy is not None and (
+            proxy.is_connected() if hasattr(proxy, "is_connected") else True
+        )
+
+    def _check_stop_connection(self, proxy, expected_proxy):
+        if expected_proxy is not None and (proxy is not expected_proxy or not self._connected(proxy)):
+            raise BridgeError("the interpreter connection changed after the watchdog triggered")
 
     @staticmethod
     def _require_ready():
@@ -172,29 +261,42 @@ class ThonnyHost:
     # ------------------------------------------------------------ API used by BridgeCore
 
     def status(self):
-        def fn():
-            wb = get_workbench()
-            runner = get_runner()
-            proxy = runner.get_backend_proxy()
-            backend = wb.get_option("run.backend_name")
-            spec = wb.get_backends().get(backend)
-            connected = proxy is not None and (
-                proxy.is_connected() if hasattr(proxy, "is_connected") else True
-            )
-            editor = wb.get_editor_notebook().get_current_editor()
-            return {
-                "thonny": True,
-                "backend": backend,
-                "backend_description": getattr(spec, "description", backend),
-                "port": getattr(proxy, "_port", None) or wb.get_option(f"{backend}.port"),
-                "connected": connected,
-                "state": runner.get_state(),
-                "current_editor_file": editor.get_filename() if editor else None,
-            }
+        return self.main.call(self.status_now)
 
-        return self.main.call(fn)
+    def status_now(self):
+        """Same as status(), for code already running in Thonny's UI thread (the panel)."""
+        wb = get_workbench()
+        runner = get_runner()
+        proxy = runner.get_backend_proxy()
+        backend = wb.get_option("run.backend_name")
+        spec = wb.get_backends().get(backend)
+        editor = wb.get_editor_notebook().get_current_editor()
+        return {
+            "thonny": True,
+            "backend": backend,
+            "backend_description": getattr(spec, "description", backend),
+            "port": getattr(proxy, "_port", None) or wb.get_option(f"{backend}.port"),
+            "connected": self._connected(proxy),
+            "baremetal": self.baremetal,
+            "state": runner.get_state(),
+            "current_editor_file": editor.get_filename() if editor else None,
+            "watchdog_enabled": self.watchdog.enabled,
+        }
 
-    def exec_code(self, code, timeout, echo=False, quiet=False, echo_text=None):
+    def watchdog_request(self, action, settings):
+        return self.main.call(lambda: self.watchdog_request_now(action, settings))
+
+    def watchdog_request_now(self, action, settings):
+        if not self.watchdog.running:
+            self._load_watchdog_config(project_dirs(get_workbench()))
+        try:
+            return {**self.watchdog.request(action, settings), "config_error": self._watchdog_config_error}
+        except ValueError as e:
+            raise BridgeError(str(e)) from e
+
+    def exec_code(
+        self, code, timeout, echo=False, quiet=False, echo_text=None, watchdog=True, expected_proxy=None
+    ):
         if not self._exec_lock.acquire(timeout=2):
             raise BridgeError("another AI execution is already in progress")
         try:
@@ -204,10 +306,12 @@ class ThonnyHost:
                 "done": threading.Event(),
                 "error": None,
                 "quiet": quiet,
+                "watchdog": watchdog,
             }
 
             def start():
                 runner = self._require_ready()
+                self._check_stop_connection(runner.get_backend_proxy(), expected_proxy)
                 self._exec = current
                 if quiet:
                     get_shell().set_ignore_program_output(True)
@@ -328,9 +432,10 @@ class ThonnyHost:
                 return f.read()
         return self._inline("read_file", timeout=60, path=path)["content_bytes"]
 
-    def interrupt(self):
+    def interrupt(self, expected_proxy=None):
         def fn():
             proxy = get_runner().get_backend_proxy()
+            self._check_stop_connection(proxy, expected_proxy)
             if proxy is None:
                 raise BridgeError("no interpreter connected")
             proxy.interrupt()
@@ -339,6 +444,29 @@ class ThonnyHost:
 
     def restart(self):
         self.main.call(lambda: get_runner().cmd_stop_restart())
+
+    def claim_baremetal(self, port):
+        def fn():
+            runner = get_runner()
+            proxy = runner.get_backend_proxy()
+            selected = self.status_now()["port"]
+            if not selected or selected == "webrepl":
+                return
+            if proxy is not None and selected != "auto" and str(selected).casefold() != port.casefold():
+                raise BridgeError(f"Thonny is using {selected}. Disconnect it before switching this Pico.")
+            self.baremetal = True
+            if proxy is not None:
+                runner.destroy_backend()
+
+        self.main.call(fn)
+
+    def resume_micropython(self):
+        def fn():
+            if self.baremetal:
+                self.baremetal = False
+                get_runner().restart_backend(clean=True, automatic=True)
+
+        self.main.call(fn)
 
     def shell_text(self, max_chars):
         return self.main.call(lambda: get_shell().text.get("1.0", "end-1c")[-max_chars:])

@@ -1,18 +1,35 @@
 """MCP tools. Each tool call is one operation, shown as one row in Thonny's AI panel."""
 
+import fnmatch
 import hashlib
+import json
 import os
 import posixpath
+import re
+import time
 import uuid
 
-from .backends import DeviceError, bridge_status, find_board_port, open_backend
+from . import baremetal, config
+from .backends import (
+    DeviceError,
+    bridge_request,
+    bridge_status,
+    find_board_port,
+    open_backend,
+    probe_webrepl,
+    transport_mode,
+)
+from .telemetry import MAX_SERIES, LineBuffer, SeriesStats
+from .wifi_setup import is_wifi_credentials, tool_wifi_setup
 
 MAX_TIMEOUT = 300.0
+TELEMETRY_READ_SECONDS = 0.2
+TELEMETRY_MAX_POINTS = 50
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", ".idea", ".vscode"}
 
 
 def project_dir():
-    return os.environ.get("THONNY_AI_PROJECT") or os.getcwd()
+    return config.project_dir()
 
 
 def local_path(path):
@@ -55,6 +72,38 @@ class Operation:
             backend.close()
 
 
+def _cap(text, limit=None):
+    """Keeps the beginning and the end of a very long output so one call cannot flood the AI's
+    context (a robot printing sensor values in a loop easily produces megabytes)."""
+    limit = limit or config.max_output()
+    if len(text) <= limit:
+        return text
+    head = limit // 3
+    tail = limit - head
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n[… {omitted} characters omitted …]\n{text[-tail:]}"
+
+
+def _safe_stop(backend):
+    """Runs the project's safe-stop code (motors off…). Returns one line describing the outcome,
+    never raises: it is called while something else already went wrong."""
+    try:
+        code = config.safe_stop_code()
+    except config.ConfigError as e:
+        return f"[safe stop NOT run: {e}]"
+    if not code:
+        return ""
+    try:
+        out, err, finished = backend.exec(code, 10.0, echo=True, quiet=False, echo_text="# ⛔ safe stop (thonny-ai)")
+    except Exception as e:
+        return f"[safe stop failed: {e}]"
+    if err.strip():
+        return f"[safe stop raised an error]\n{err.strip()}"
+    if not finished:
+        return "[safe stop did not finish within 10 s]"
+    return "[safe stop code ran: hardware put in its safe state]"
+
+
 def _run_quiet(backend, code, timeout=20.0):
     out, err, finished = backend.exec(code, timeout, echo=False, quiet=True)
     if err.strip():
@@ -64,12 +113,14 @@ def _run_quiet(backend, code, timeout=20.0):
     return out
 
 
-def _format_exec(backend, out, err, finished, timeout):
-    text = out
+def _format_exec(backend, out, err, finished, timeout, note=""):
+    text = _cap(out)
     if err:
-        text += ("\n" if text else "") + "[stderr]\n" + err
+        text += ("\n" if text else "") + "[stderr]\n" + _cap(err)
     if not finished:
         text += f"\n[interrupted after {timeout:.0f} s]"
+    if note:
+        text += "\n" + note
     text = f"(via {backend.name})\n{text or '(no output)'}"
     if err.strip() or not finished:
         raise DeviceError(text)
@@ -121,28 +172,54 @@ def _remote_hashes(backend, paths):
 
 
 def tool_status(args):
+    lines = []
     try:
         st = bridge_status()
     except DeviceError as e:
-        return f"{e}\nWait a moment, or check that no dialog is open in Thonny."
-    lines = []
-    if st:
-        lines.append(
-            f"Thonny is open (thonny-ai plugin active). Interpreter: {st.get('backend_description')}"
-            f" | port: {st.get('port')} | connected: {st.get('connected')} | state: {st.get('state')}"
-            f" | approval required: {st.get('require_approval')}"
-        )
-        if st.get("current_editor_file"):
-            lines.append(f"File open in Thonny's editor: {st['current_editor_file']}")
+        lines.append(f"{e}\nWait a moment, or check that no dialog is open in Thonny.")
     else:
-        lines.append("Thonny is not running: tools will use the serial port directly.")
+        if st is None:
+            lines.append("Thonny is not running.")
+        else:
+            lines.append(
+                f"Thonny is open (thonny-ai plugin active). Interpreter: {st.get('backend_description')}"
+                f" | port: {st.get('port')} | connected: {st.get('connected')} | state: {st.get('state')}"
+                f" | approval required: {st.get('require_approval')}"
+            )
+            if st.get("current_editor_file"):
+                lines.append(f"File open in Thonny's editor: {st['current_editor_file']}")
     try:
-        port = find_board_port()
+        port = os.environ.get("THONNY_AI_SERIAL_PORT") or find_board_port()
         lines.append(f"MicroPython board on USB: {port}" if port else "No MicroPython board on USB.")
     except Exception as e:
         lines.append(f"USB detection failed: {e}")
+    try:
+        lines.append(f"Transport mode: {transport_mode()}")
+    except DeviceError as e:
+        lines.append(f"Transport mode: {e}")
+    try:
+        settings = config.webrepl_settings()
+        if settings.host:
+            endpoint = f"Wi-Fi WebREPL at {settings.host} (port {settings.port})"
+            try:
+                probe_webrepl(settings)
+                lines.append(f"{endpoint}: reachable and authenticated.")
+            except (DeviceError, config.ConfigError) as e:
+                lines.append(f"{endpoint}: {e}")
+        else:
+            lines.append("Wi-Fi WebREPL is not configured.")
+    except config.ConfigError as e:
+        lines.append(f"Wi-Fi WebREPL configuration error: {e}")
     lines.append(f"Project directory (relative paths): {project_dir()}")
     return "\n".join(lines)
+
+
+def tool_watchdog(args):
+    if bridge_status() is None:
+        raise DeviceError("Watchdog is only available while Thonny is open.")
+    action = args.get("action", "status")
+    result = bridge_request("/watchdog", args, timeout=15 if action == "status" else 135)
+    return json.dumps({key: value for key, value in result.items() if key != "ok"}, ensure_ascii=False)
 
 
 def tool_exec(args):
@@ -151,7 +228,8 @@ def tool_exec(args):
 
     def fn(b):
         out, err, finished = b.exec(code, timeout, echo=True, quiet=False)
-        return _format_exec(b, out, err, finished, timeout)
+        note = "" if finished else _safe_stop(b)
+        return _format_exec(b, out, err, finished, timeout, note)
 
     return Operation("exec", _first_line(code), code).run(fn)
 
@@ -167,7 +245,8 @@ def tool_run_file(args):
         out, err, finished = b.exec(
             code, timeout, echo=True, quiet=False, echo_text=f"# ▶ {rel}  (thonny-ai)"
         )
-        return _format_exec(b, out, err, finished, timeout)
+        note = "" if finished else _safe_stop(b)
+        return _format_exec(b, out, err, finished, timeout, note)
 
     return Operation("run_file", rel, code).run(fn)
 
@@ -194,12 +273,16 @@ def tool_ls(args):
 
 def tool_read(args):
     path = remote_path(args["path"])
+    if is_wifi_credentials(path):
+        raise DeviceError("WebREPL credentials are excluded from MCP file reads.")
     data = Operation("read", path).run(lambda b: b.read_file(path))
     return data.decode("utf-8", "replace")
 
 
 def tool_write(args):
     path = remote_path(args["path"])
+    if is_wifi_credentials(path):
+        raise DeviceError("Use wifi_setup to configure WebREPL credentials.")
     data = args["content"].encode("utf-8")
 
     def fn(b):
@@ -224,7 +307,19 @@ def tool_rm(args):
     return Operation("rm", path).run(lambda b: (_run_quiet(b, code), f"{path} deleted")[1])
 
 
-def _collect_local(local_dir):
+def _is_ignored(rel, patterns):
+    """True when a path relative to the synced folder matches one of the glob patterns
+    (matched against the whole path, the file name, and as a folder prefix)."""
+    rel = rel.strip("/")
+    name = posixpath.basename(rel)
+    for pat in patterns:
+        pat = pat.replace("\\", "/").strip("/")
+        if fnmatch.fnmatchcase(rel, pat) or fnmatch.fnmatchcase(name, pat) or rel.startswith(pat + "/"):
+            return True
+    return False
+
+
+def _collect_local(local_dir, ignore=()):
     files = []
     for root, dirs, names in os.walk(local_dir):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
@@ -232,25 +327,61 @@ def _collect_local(local_dir):
             if name.endswith(".pyc") or name.startswith("."):
                 continue
             full = os.path.join(root, name)
-            files.append((full, os.path.relpath(full, local_dir).replace("\\", "/")))
+            rel = os.path.relpath(full, local_dir).replace("\\", "/")
+            if not _is_ignored(rel, ignore):
+                files.append((full, rel))
     return files
 
 
+def _remote_files(backend, root):
+    """Every file under `root` on the board, as [(path, size)] (empty if the folder is missing)."""
+    code = (
+        "import os\n"
+        "def _w(p):\n"
+        "    try: names = os.listdir(p)\n"
+        "    except OSError: return\n"
+        "    for n in sorted(names):\n"
+        "        f = p.rstrip('/') + '/' + n\n"
+        "        s = os.stat(f)\n"
+        "        if s[0] & 0x4000: _w(f)\n"
+        "        else: print(s[6], f)\n"
+        f"_w({root!r})\n"
+    )
+    files = []
+    for line in _run_quiet(backend, code, 60).splitlines():
+        size, _, path = line.strip().partition(" ")
+        if path and size.isdigit():
+            files.append((path, int(size)))
+    return files
+
+
+def _delete_remote(backend, paths):
+    code = "import os\n" f"for _p in {paths!r}:\n    os.remove(_p)\n"
+    _run_quiet(backend, code, 60)
+
+
+def _remote_target(remote_dir, rel):
+    return posixpath.join(remote_dir, rel) if remote_dir != "/" else "/" + rel
+
+
 def tool_sync(args):
-    local_dir = local_path(args.get("local_dir") or "src")
+    local_dir = local_path(args.get("local_dir") or config.get("local_dir") or "src")
     if not os.path.isdir(local_dir):
         raise DeviceError(f"local folder not found: {local_dir} (pass local_dir)")
-    remote_dir = remote_path(args.get("remote_dir") or "/")
+    remote_dir = remote_path(args.get("remote_dir") or config.get("remote_dir") or "/")
     force = bool(args.get("force"))
     dry_run = bool(args.get("dry_run"))
+    delete = bool(args.get("delete"))
     reset = args.get("reset", True)
+    ignore = list(config.ignore_patterns()) + list(args.get("ignore") or [])
 
     plan = []
-    for full, rel in _collect_local(local_dir):
+    for full, rel in _collect_local(local_dir, ignore):
+        if is_wifi_credentials(rel):
+            continue
         with open(full, "rb") as f:
             data = f.read()
-        target = posixpath.join(remote_dir, rel) if remote_dir != "/" else "/" + rel
-        plan.append((target, data, hashlib.sha256(data).hexdigest()))
+        plan.append((_remote_target(remote_dir, rel), data, hashlib.sha256(data).hexdigest()))
     if not plan:
         raise DeviceError(f"nothing to sync in {local_dir}")
 
@@ -259,28 +390,195 @@ def tool_sync(args):
         changed = [(p, d) for p, d, h in plan if force or remote.get(p) != h]
         unchanged = len(plan) - len(changed)
         lines = [f"  {p} ({len(d)} B)" for p, d in changed]
+        extra = []
+        if delete:
+            wanted = {p for p, _, _ in plan}
+            prefix = remote_dir.rstrip("/") + "/"
+            for path, _ in _remote_files(b, remote_dir):
+                rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
+                if path not in wanted and not is_wifi_credentials(path) and not _is_ignored(rel, ignore):
+                    extra.append(path)
+            lines += [f"  DELETE {p}" for p in extra]
         if dry_run:
             return (
                 f"Dry run via {b.name}: {len(changed)} file(s) would be uploaded, "
-                f"{unchanged} unchanged.\n" + "\n".join(lines)
+                f"{unchanged} unchanged"
+                + (f", {len(extra)} would be deleted" if delete else "")
+                + ".\n"
+                + "\n".join(lines)
             )
         _make_dirs(b, [p for p, _ in changed])
         for p, d in changed:
             b.write_file(p, d)
-        report = f"Synced via {b.name} from {local_dir}: {len(changed)} uploaded, {unchanged} unchanged."
+        if extra:
+            _delete_remote(b, extra)
+        report = f"Synced via {b.name} from {local_dir}: {len(changed)} uploaded, {unchanged} unchanged"
+        report += f", {len(extra)} deleted." if delete else "."
         if lines:
             report += "\n" + "\n".join(lines)
-        if reset and changed:
+        if reset and (changed or extra):
             b.reset()
             report += (
                 "\nSoft reset done: main.py restarts."
-                if b.name == "serial"
+                if b.name in ("serial", "wifi")
                 else "\nStop/Restart sent to Thonny (main.py runs on its own once Thonny is closed)."
             )
         return report
 
     detail = "\n".join(f"{p} ({len(d)} B)" for p, d, _ in plan)
     return Operation("sync", f"{os.path.basename(local_dir)} → {remote_dir}", detail).run(fn)
+
+
+def tool_pull(args):
+    """Board → computer: download a folder (default: everything) into a local folder."""
+    remote_dir = remote_path(args.get("remote_dir") or "/")
+    local_dir = local_path(args.get("local_dir") or "board_pull")
+    overwrite = bool(args.get("overwrite"))
+    dry_run = bool(args.get("dry_run"))
+    ignore = list(config.ignore_patterns()) + list(args.get("ignore") or [])
+    base = os.path.abspath(local_dir)
+
+    def fn(b):
+        files = _remote_files(b, remote_dir)
+        if not files:
+            return f"No file found under {remote_dir} on the board."
+        prefix = remote_dir.rstrip("/") + "/"
+        todo = []
+        for path, _ in files:
+            rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
+            if is_wifi_credentials(path) or _is_ignored(rel, ignore):
+                continue
+            full = os.path.abspath(os.path.join(base, *rel.split("/")))
+            try:
+                inside = os.path.commonpath([base, full]) == base
+            except ValueError:
+                inside = False
+            if not inside:
+                raise DeviceError(f"refusing a path that escapes the local folder: {path}")
+            todo.append((path, full, rel))
+        hashes = _remote_hashes(b, [p for p, _, _ in todo])
+        new, same, changed = [], [], []
+        for path, full, rel in todo:
+            if not os.path.exists(full):
+                new.append((path, full, rel))
+                continue
+            with open(full, "rb") as f:
+                local_hash = hashlib.sha256(f.read()).hexdigest()
+            (same if local_hash == hashes.get(path) else changed).append((path, full, rel))
+        to_write = new + (changed if overwrite else [])
+        lines = [f"  NEW      {rel}" for _, _, rel in new]
+        lines += [
+            f"  {'UPDATE  ' if overwrite else 'DIFFERS '} {rel}" + ("" if overwrite else " (kept: pass overwrite)")
+            for _, _, rel in changed
+        ]
+        summary = (
+            f"{len(new)} new, {len(changed)} different "
+            f"({'overwritten' if overwrite else 'kept'}), {len(same)} identical"
+        )
+        if dry_run:
+            return f"Dry run via {b.name}: {summary}.\n" + "\n".join(lines)
+        for path, full, _ in to_write:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as f:
+                f.write(b.read_file(path))
+        return f"Pulled via {b.name} into {local_dir}: {summary}.\n" + "\n".join(lines)
+
+    return Operation("pull", f"{remote_dir} → {os.path.basename(base)}").run(fn)
+
+
+I2C_KNOWN = {
+    0x0C: "AK8963 magnetometer",
+    0x1E: "HMC5883L / LIS3MDL magnetometer",
+    0x1D: "ADXL345 accelerometer",
+    0x29: "VL53L0X / VL53L1X distance sensor, TCS34725 colour",
+    0x3C: "SSD1306 OLED display",
+    0x3D: "SSD1306 OLED display",
+    0x40: "PCA9685 PWM driver, INA219 power monitor",
+    0x48: "ADS1115 ADC",
+    0x53: "ADXL345 accelerometer",
+    0x68: "MPU-6050 / MPU-6500 / MPU-9250 / ICM-20948 IMU, DS3231 RTC",
+    0x69: "MPU-6050 / ICM-20948 IMU (AD0 high)",
+    0x6A: "LSM6DS3 IMU",
+    0x6B: "LSM6DS3 IMU",
+    0x70: "PCA9548 I2C mux, PCA9685 all-call",
+    0x76: "BME280 / BMP280",
+    0x77: "BME280 / BMP280 / BMP180",
+}
+
+
+def _int_arg(args, key, default=None, low=0, high=48):
+    value = args.get(key, default)
+    if value is None:
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise DeviceError(f"`{key}` must be an integer")
+    if not low <= value <= high:
+        raise DeviceError(f"`{key}` must be between {low} and {high}")
+    return value
+
+
+def tool_i2c_scan(args):
+    bus = _int_arg(args, "id", 0, 0, 9)
+    sda = _int_arg(args, "sda")
+    scl = _int_arg(args, "scl")
+    freq = _int_arg(args, "freq", 400000, 10000, 3400000)
+    if (sda is None) != (scl is None):
+        raise DeviceError("pass both `sda` and `scl`, or neither (board default pins)")
+    pins = f", sda=Pin({sda}), scl=Pin({scl})" if sda is not None else ""
+    code = (
+        "from machine import I2C, Pin\n"
+        f"_i = I2C({bus}{pins}, freq={freq})\n"
+        "_a = _i.scan()\n"
+        "print(' '.join(str(x) for x in _a))\n"
+    )
+
+    def fn(b):
+        out = _run_quiet(b, code).strip()
+        found = [int(x) for x in out.split()] if out else []
+        where = f"sda=GP{sda} scl=GP{scl}" if sda is not None else "default pins"
+        if not found:
+            return (
+                f"I2C{bus} ({where}): no device answered. Check wiring, pull-ups and power "
+                "(sda/scl swapped is the usual culprit)."
+            )
+        rows = [f"  0x{a:02X}  {I2C_KNOWN.get(a, 'unknown device')}" for a in found]
+        return f"I2C{bus} ({where}): {len(found)} device(s)\n" + "\n".join(rows)
+
+    return Operation("i2c_scan", f"I2C{bus} {sda if sda is not None else ''}".strip()).run(fn)
+
+
+GPIO_MODES = {"in": "Pin.IN", "in_pullup": "Pin.IN, Pin.PULL_UP", "in_pulldown": "Pin.IN, Pin.PULL_DOWN"}
+
+
+def tool_gpio(args):
+    pin = _int_arg(args, "pin", None, 0, 48)
+    if pin is None:
+        raise DeviceError("`pin` is required")
+    mode = args.get("mode", "in")
+    value = _int_arg(args, "value", None, 0, 1)
+    if mode == "out":
+        if value is None:
+            raise DeviceError("mode `out` needs `value` (0 or 1)")
+        code = f"from machine import Pin\n_p = Pin({pin}, Pin.OUT)\n_p.value({value})\nprint(_p.value())\n"
+    elif mode == "adc":
+        code = f"from machine import ADC, Pin\nprint(ADC(Pin({pin})).read_u16())\n"
+    elif mode in GPIO_MODES:
+        if value is not None:
+            raise DeviceError("`value` only applies to mode `out`")
+        code = f"from machine import Pin\nprint(Pin({pin}, {GPIO_MODES[mode]}).value())\n"
+    else:
+        raise DeviceError("`mode` must be one of: in, in_pullup, in_pulldown, out, adc")
+
+    def fn(b):
+        out = _run_quiet(b, code).strip()
+        if mode == "adc":
+            raw = int(out)
+            return f"GP{pin} ADC = {raw} (0-65535, ≈ {raw / 65535 * 3.3:.2f} V at 3.3 V ref)"
+        return f"GP{pin} ({mode}) = {out}"
+
+    return Operation("gpio", f"GP{pin} {mode}" + (f"={value}" if value is not None else "")).run(fn)
 
 
 INFO_CODE = """\
@@ -323,9 +621,9 @@ def tool_info(args):
 def _format_stream(backend, out, err, running, prefix):
     text = f"{prefix} (via {backend.name})"
     if out:
-        text += "\n" + out
+        text += "\n" + _cap(out)
     if err:
-        text += "\n[stderr]\n" + err
+        text += "\n[stderr]\n" + _cap(err)
     if running is None:
         text += "\n[console only: program state unknown]"
     else:
@@ -356,26 +654,139 @@ def tool_start(args):
     return Operation("start", label, code).run(fn)
 
 
+def _watch(read, seconds, pattern):
+    """Collects output for up to `seconds`. With a pattern, reads in 1 s slices and stops as soon
+    as it appears (e.g. waiting for a "READY" line) or when the program ends.
+    Returns (out, err, running, matched); matched is None when no pattern was given."""
+    if pattern is None:
+        out, err, running = read(seconds)
+        return out, err, running, None
+    deadline = time.time() + seconds
+    out = err = ""
+    running = None
+    matched = False
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        o, e, running = read(min(1.0, remaining))
+        out, err = out + o, err + e
+        if pattern.search(out) or pattern.search(err):
+            matched = True
+            break
+        if running is False:
+            break
+    return out, err, running, matched
+
+
 def tool_monitor(args):
     seconds = min(float(args.get("seconds", 5)), MAX_TIMEOUT)
+    pattern = None
+    if args.get("until"):
+        try:
+            pattern = re.compile(args["until"])
+        except re.error as e:
+            raise DeviceError(f"`until` is not a valid regular expression: {e}")
 
     def fn(b):
         if getattr(b, "passive", False):
-            return _format_stream(b, b.listen(seconds), "", None, "Console output")
-        out, err, running = b.monitor(seconds)
-        return _format_stream(b, out, err, running, "Output")
+            out, err, running, matched = _watch(lambda s: (b.listen(s), "", None), seconds, pattern)
+            text = _format_stream(b, out, err, None, "Console output")
+        else:
+            out, err, running, matched = _watch(b.monitor, seconds, pattern)
+            text = _format_stream(b, out, err, running, "Output")
+        if matched is not None:
+            text += "\n[pattern matched]" if matched else f"\n[pattern /{pattern.pattern}/ not seen]"
+        return text
 
     return Operation("monitor", f"{seconds:g} s", idle=False, passive=True).run(fn)
 
 
-def tool_interrupt(args):
-    def fn(b):
-        stopped = b.ensure_idle()
-        if not stopped:
-            b.interrupt()  # a program started outside thonny-ai (e.g. main.py at boot)
-        return f"Program stopped (via {b.name})." if stopped else f"Ctrl-C sent (via {b.name})."
+def tool_telemetry(args):
+    seconds = args.get("seconds", 5)
+    if type(seconds) not in (int, float) or not 0 < seconds <= MAX_TIMEOUT:
+        raise DeviceError(f"`seconds` must be a number between 0 (exclusive) and {MAX_TIMEOUT:g}")
+    names = args.get("series")
+    if names is not None and (not isinstance(names, list) or any(not isinstance(n, str) for n in names)):
+        raise DeviceError("`series` must be an array of names")
+    selected = set(names) if names is not None else None
+    points = args.get("points", 0)
+    if type(points) is not int or not 0 <= points <= TELEMETRY_MAX_POINTS:
+        raise DeviceError(f"`points` must be an integer between 0 and {TELEMETRY_MAX_POINTS}")
 
-    return Operation("interrupt", "stop program", idle=False).run(fn)
+    def collect(backend):
+        passive = getattr(backend, "passive", False)
+        lines = LineBuffer()
+        series = {}
+        series_limited = False
+        start = time.monotonic()
+        elapsed = 0.0
+        running = None
+        while elapsed < seconds:
+            interval = min(TELEMETRY_READ_SECONDS, seconds - elapsed)
+            if passive:
+                out = backend.listen(interval)
+            else:
+                out, _, running = backend.monitor(interval)
+            elapsed = time.monotonic() - start
+            for fields in lines.feed(out):
+                for name, value in fields.items():
+                    if selected is not None and name not in selected:
+                        continue
+                    if name not in series:
+                        if len(series) >= MAX_SERIES:
+                            series_limited = True
+                            continue
+                        series[name] = SeriesStats(points)
+                    series[name].add(elapsed, value)
+            if running is False:
+                break
+            elapsed = time.monotonic() - start
+
+        return json.dumps(
+            {
+                "backend": backend.name,
+                "elapsed_seconds": elapsed,
+                "running": running,
+                "series": {name: stats.summary() for name, stats in series.items()},
+                "series_limited": series_limited,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    return Operation("telemetry", f"{seconds:g} s", idle=False, passive=True).run(collect)
+
+
+def _stop_program(b):
+    """Ctrl-C the running program, then put the hardware in its safe state."""
+    stopped = b.ensure_idle()
+    if not stopped:
+        b.interrupt()  # a program started outside thonny-ai (e.g. main.py at boot)
+        time.sleep(0.3)
+    text = f"Program stopped (via {b.name})." if stopped else f"Ctrl-C sent (via {b.name})."
+    note = _safe_stop(b)
+    return text + ("\n" + note if note else "")
+
+
+def tool_interrupt(args):
+    return Operation("interrupt", "stop program", idle=False).run(_stop_program)
+
+
+def tool_stop(args):
+    """Emergency stop: interrupt, then the safe-stop code; warns loudly when none is configured."""
+
+    def fn(b):
+        text = _stop_program(b)
+        if "safe stop" not in text:
+            text += (
+                "\nWARNING: no safe-stop code configured, so motors driven by PWM may still be "
+                'running. Add "safe_stop" to .thonny-ai.json (e.g. "import motors; motors.stop()"), '
+                "or call `reset`."
+            )
+        return text
+
+    return Operation("stop", "EMERGENCY STOP", idle=False).run(fn)
 
 
 def tool_reset(args):
@@ -407,10 +818,48 @@ _NUM = {"type": "number"}
 _BOOL = {"type": "boolean"}
 
 TOOLS = {
+    "bm_doctor": (
+        baremetal.doctor,
+        "Check the portable Pico C/C++ toolchain, connected USB device mode, and install commands.",
+        _schema(),
+    ),
+    "bm_new": (
+        baremetal.new,
+        "Generate a Pico SDK C blink project with a USB serial console.",
+        _schema({"name": _STR, "board": {"enum": list(baremetal.BOARDS)}, "directory": _STR}, ["name"]),
+    ),
+    "bm_build": (
+        baremetal.build,
+        "Configure and build a Pico SDK project directory with CMake and Ninja. Returns UF2 paths.",
+        _schema({"path": _STR, "board": {"enum": list(baremetal.BOARDS)}}, ["path"]),
+    ),
+    "bm_flash": (
+        baremetal.flash,
+        "Replace firmware on the single connected Pico with a compatible local UF2, then wait for reboot.",
+        _schema({"path": _STR, "method": {"enum": ["auto", "copy", "picotool"]}}, ["path"]),
+    ),
+    "bm_console": (
+        baremetal.console,
+        "Read Pico SDK USB serial output without transmitting. Optionally stop on an until regex.",
+        _schema({"seconds": {"type": "number", "default": 5, "maximum": MAX_TIMEOUT}, "until": _STR}),
+    ),
+    "bm_restore_micropython": (
+        baremetal.restore,
+        "Replace firmware with official MicroPython for Pico W or Pico 2 W and verify the raw REPL.",
+        _schema({"board": {"enum": list(baremetal.BOARDS)}}),
+    ),
     "status": (
         tool_status,
         "How the board is reached right now: Thonny open/connected (interpreter, port, state, "
-        "whether the user must approve actions) or direct serial. Call it first when unsure.",
+        "whether the user must approve actions), USB, and Wi-Fi/WebREPL. Call it first when unsure.",
+        _schema(),
+    ),
+    "wifi_setup": (
+        tool_wifi_setup,
+        "Set up the Pico W's Wi-Fi and WebREPL over USB, preserve existing boot.py code, "
+        "and return the board IP and client configuration. Close Thonny before running. "
+        "Set THONNY_AI_WIFI_SSID, THONNY_AI_WIFI_PASSWORD, and the WebREPL password in the MCP "
+        "server environment before calling. This stops the current board program.",
         _schema(),
     ),
     "info": (
@@ -440,8 +889,24 @@ TOOLS = {
         tool_monitor,
         "Read what the running program prints, for up to `seconds` (default 5, returns early if "
         "it ends). Never interrupts it: with Thonny closed it just listens to the board's console, "
-        "so it also works for main.py running on its own after boot.",
-        _schema({"seconds": _NUM}),
+        "so it also works for main.py running on its own after boot. Pass `until` (a regular "
+        "expression) to return as soon as that text appears, e.g. until='READY|Traceback'.",
+        _schema({"seconds": _NUM, "until": _STR}),
+    ),
+    "telemetry": (
+        tool_telemetry,
+        "Read numeric program output without interrupting it (Thonny or passive USB serial). "
+        "Print name=value, name:value, or a JSON object on each line. Returns JSON with last, "
+        "min, max, mean, population standard deviation, count and estimated rate in Hz per "
+        "series. Filter by exact series names and optionally include the N latest points per "
+        "series as [seconds since capture started, value].",
+        _schema(
+            {
+                "seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": MAX_TIMEOUT, "default": 5},
+                "series": {"type": "array", "items": _STR},
+                "points": {"type": "integer", "minimum": 0, "maximum": TELEMETRY_MAX_POINTS, "default": 0},
+            }
+        ),
     ),
     "run_file": (
         tool_run_file,
@@ -474,16 +939,81 @@ TOOLS = {
         "Upload a project folder (default 'src') to the board, sending only files whose "
         "SHA-256 differs from the board copy, then soft-reset so main.py restarts. "
         "Options: remote_dir (default '/'), force (upload everything), dry_run (only report), "
-        "reset (default true).",
+        "reset (default true), ignore (glob patterns to skip, e.g. ['*.md','tests']), delete "
+        "(also remove board files that no longer exist locally: use dry_run first). Defaults for "
+        "local_dir, remote_dir and ignore can live in .thonny-ai.json.",
         _schema(
-            {"local_dir": _STR, "remote_dir": _STR, "force": _BOOL, "dry_run": _BOOL, "reset": _BOOL}
+            {
+                "local_dir": _STR,
+                "remote_dir": _STR,
+                "force": _BOOL,
+                "dry_run": _BOOL,
+                "reset": _BOOL,
+                "delete": _BOOL,
+                "ignore": {"type": "array", "items": _STR},
+            }
+        ),
+    ),
+    "pull": (
+        tool_pull,
+        "Download files from the board into a local folder (default 'board_pull'): backup, or "
+        "recover code that only exists on the board. Existing local files that differ are kept "
+        "unless overwrite is true. Options: remote_dir (default '/'), local_dir, overwrite, "
+        "dry_run, ignore.",
+        _schema(
+            {
+                "remote_dir": _STR,
+                "local_dir": _STR,
+                "overwrite": _BOOL,
+                "dry_run": _BOOL,
+                "ignore": {"type": "array", "items": _STR},
+            }
         ),
     ),
     "interrupt": (
         tool_interrupt,
         "Stop the program running on the board (Ctrl-C, escalating to Stop/Restart in Thonny "
-        "if needed).",
+        "if needed), then run the project's safe-stop code if one is configured.",
         _schema(),
+    ),
+    "stop": (
+        tool_stop,
+        "EMERGENCY STOP for robots: interrupt the program and run the safe-stop code from "
+        ".thonny-ai.json (\"safe_stop\") so motors and actuators end up off, even PWM outputs "
+        "that Ctrl-C leaves running. Warns when no safe-stop code is configured.",
+        _schema(),
+    ),
+    "watchdog": (
+        tool_watchdog,
+        "With Thonny open, read or change its automatic emergency stop. "
+        "Actions: status (default), on, off, configure. Configure accepts partial settings. "
+        "Returns effective settings and recent triggers. Changes last for the Thonny session.",
+        _schema(
+            {
+                "action": {"type": "string", "enum": ["status", "on", "off", "configure"], "default": "status"},
+                "enabled": _BOOL,
+                "patterns": {"type": "array", "items": _STR},
+                "heartbeat": {"type": ["string", "null"], "description": "Regex to renew the timer, or null to disable it."},
+                "heartbeat_timeout": {"type": "number", "exclusiveMinimum": 0, "description": "Seconds between heartbeats."},
+            }
+        ),
+    ),
+    "i2c_scan": (
+        tool_i2c_scan,
+        "Scan an I2C bus and name the devices found (IMU, OLED, distance sensor, PWM driver…). "
+        "Pass sda and scl (GPIO numbers) or none for the board's default pins; id (default 0) "
+        "and freq (default 400000) are optional. Stops the program currently running first.",
+        _schema({"sda": _NUM, "scl": _NUM, "id": _NUM, "freq": _NUM}),
+    ),
+    "gpio": (
+        tool_gpio,
+        "Read or drive one pin. mode: in (default), in_pullup, in_pulldown, out (needs value 0/1) "
+        "or adc (analog read, 0-65535). Stops the program currently running first; remember an "
+        "output pin keeps its level until reset.",
+        _schema(
+            {"pin": _NUM, "mode": {"type": "string", "enum": ["in", "in_pullup", "in_pulldown", "out", "adc"]}, "value": _NUM},
+            ["pin"],
+        ),
     ),
     "reset": (
         tool_reset,
@@ -501,3 +1031,45 @@ TOOLS = {
         _schema({"path": _STR}, ["path"]),
     ),
 }
+
+
+# MCP tool annotations (hints for clients: what may be auto-approved, what deserves a warning).
+# (title, readOnly, destructive). "destructive" = can overwrite or delete something.
+ANNOTATIONS = {
+    "bm_doctor": ("Check Pico C/C++ toolchain", True, False),
+    "bm_new": ("Create a Pico SDK project", False, False),
+    "bm_build": ("Build Pico firmware", False, False),
+    "bm_flash": ("Flash Pico firmware", False, True),
+    "bm_console": ("Read the Pico C console", True, False),
+    "bm_restore_micropython": ("Restore MicroPython firmware", False, True),
+    "status": ("Connection status", True, False),
+    "wifi_setup": ("Set up Wi-Fi over USB", False, True),
+    "info": ("Board information", False, False),
+    "exec": ("Run code on the board", False, True),
+    "start": ("Start a background program", False, True),
+    "monitor": ("Watch program output", True, False),
+    "telemetry": ("Read telemetry statistics", True, False),
+    "run_file": ("Run a local file on the board", False, True),
+    "ls": ("List board files", True, False),
+    "read": ("Read a board file", True, False),
+    "write": ("Write a board file", False, True),
+    "rm": ("Delete board files", False, True),
+    "sync": ("Deploy a project folder", False, True),
+    "pull": ("Download board files", False, False),
+    "interrupt": ("Stop the program", False, False),
+    "stop": ("Emergency stop", False, False),
+    "watchdog": ("Safety watchdog", False, False),
+    "reset": ("Soft reset", False, False),
+    "shell": ("Read Thonny's shell", True, False),
+    "open": ("Open a file in Thonny", False, False),
+    "i2c_scan": ("Scan the I2C bus", False, False),
+    "gpio": ("Read or drive a pin", False, True),
+}
+
+
+def annotations_for(name):
+    title, read_only, destructive = ANNOTATIONS.get(name, (name, False, True))
+    note = {"title": title, "readOnlyHint": read_only}
+    if not read_only:
+        note["destructiveHint"] = destructive
+    return note
