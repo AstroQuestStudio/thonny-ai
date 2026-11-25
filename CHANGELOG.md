@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-11-25
 
 Robot-oriented release.
 
@@ -30,7 +30,21 @@ Robot-oriented release.
   board; colour-coded log (readable on light and dark themes) with text filter, *Errors only*, *Clear*,
   and a footer with counts; details window with Code / Result tabs, monospaced, with Copy; right-click
   menu to copy code or result.
-- 116 tests (was 54).
+- **Safety watchdog** (plugin side, on by default): an error pattern in the program output
+  (`Traceback`, `MemoryError`, `OSError: [Errno`) or an expired heartbeat triggers the emergency stop
+  once per run; lost connections are logged. Configured by `watchdog` in `.thonny-ai.json`, the panel
+  checkbox or the `watchdog` MCP tool.
+- **Telemetry**: `telemetry` MCP tool (per-series stats from `name=value`, `name:value` or JSON lines,
+  through Thonny or a passive serial listen) and a live *Telemetry* view in Thonny (10/30/60 s window,
+  clickable legend, pause, clear, CSV export, round axis ticks), opened from the panel header.
+- **Wi-Fi**: WebREPL transport sharing the raw-REPL logic with USB (`RawReplBackend`); automatic
+  Thonny → USB → Wi-Fi selection, `THONNY_AI_TRANSPORT=usb|wifi|auto`; `wifi_setup` writes the Wi-Fi
+  and WebREPL settings over USB without overwriting `boot.py`; passwords only from the environment.
+- **Bare metal**: `bm_doctor`, `bm_new`, `bm_build`, `bm_flash`, `bm_console`,
+  `bm_restore_micropython` — Pico SDK projects for `pico_w` / `pico2_w` built with a portable toolchain,
+  BOOTSEL entered from MicroPython, flash approval in Thonny, REPL checked after restoring MicroPython.
+- `tests/hardware_check.py`: one-command validation of every tool on a real board.
+- 193 tests (was 54).
 
 ## 0.1.1 — 2026-09-23
 

@@ -283,3 +283,25 @@ class ViewTest(unittest.TestCase):
         rows = list(csv.reader(io.StringIO(output.getvalue())))
         self.assertEqual(rows, [["elapsed_seconds", "series", "value"], ["15.0", "dist", "3.0"],
                                 ["15.0", "vg", "0.42"]])
+
+
+class NiceAxisTest(unittest.TestCase):
+    def test_round_steps(self):
+        from thonnycontrib.thonny_ai.telemetry_view import format_tick, nice_axis
+
+        low, high, ticks, step = nice_axis(-0.024, 1.315)
+        self.assertEqual(step, 0.5)
+        self.assertEqual([format_tick(v, step) for v in ticks], ["-0.5", "0.0", "0.5", "1.0", "1.5"])
+        low, high, ticks, step = nice_axis(12, 87)
+        self.assertEqual((low, high, step), (0, 100, 20))
+        self.assertEqual([format_tick(v, step) for v in ticks], ["0", "20", "40", "60", "80", "100"])
+        low, high, ticks, step = nice_axis(0.61, 0.98)
+        self.assertEqual([format_tick(v, step) for v in ticks], ["0.6", "0.7", "0.8", "0.9", "1.0"])
+
+    def test_flat_series_and_negative_zero(self):
+        from thonnycontrib.thonny_ai.telemetry_view import format_tick, nice_axis
+
+        low, high, ticks, step = nice_axis(5, 5)
+        self.assertLess(low, 5)
+        self.assertGreater(high, 5)
+        self.assertEqual(format_tick(-1e-12, 0.1), "0.0")

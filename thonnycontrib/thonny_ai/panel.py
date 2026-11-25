@@ -316,8 +316,10 @@ class ThonnyAIView(ttk.Frame):
         stop.configure(font=bold)
         stop.pack(side="top", anchor="e")
         Tooltip(stop, t("stop_tip"))
-        link = _button(actions, t("connect_claude"), self.connect_claude)
-        link.pack(side="top", anchor="e", pady=(4, 0))
+        links = ttk.Frame(actions)
+        links.pack(side="top", anchor="e", pady=(4, 0))
+        _button(links, "📈 " + t("telemetry_title"), self._show_telemetry).pack(side="left", padx=(0, 4))
+        _button(links, t("connect_claude"), self.connect_claude).pack(side="left")
 
     def _build_options(self):
         self._options_row = ttk.Frame(self)
@@ -553,6 +555,14 @@ class ThonnyAIView(ttk.Frame):
         if row:
             self._tree.selection_set(row)
             self._menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_telemetry(self):
+        from .telemetry_view import VIEW_ID as TELEMETRY_VIEW_ID
+
+        try:
+            self._wb.show_view(TELEMETRY_VIEW_ID)
+        except Exception:
+            pass  # view not registered (tests, old Thonny): nothing to open
 
     # ------------------------------------------------------------ Claude Code setup
 

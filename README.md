@@ -101,6 +101,10 @@ On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shel
 | ⚡ **Smart sync** | `sync` uploads a project folder and only sends files whose SHA-256 changed, then restarts `main.py`. |
 | 🛑 **Robot safety** | `stop` interrupts the program **and** runs your `safe_stop` code (motors off): Ctrl-C alone leaves PWM outputs running. A timeout or `interrupt` does the same. Stop and interrupt are never blocked by the approval panel. |
 | 🖥️ **Modern panel** | Live board status (port, connected, ready/running), a red **STOP** button (also in the Tools menu), colour-coded log that follows light and dark themes, filter and *errors only*, details window with Code / Result tabs and Copy, right-click copy, a warning on approval requests that change the board. |
+| 🐕 **Safety watchdog** | Watches the program's output: a `Traceback`, a `MemoryError` or a missing heartbeat triggers the emergency stop by itself. Toggle in the panel. [Details](docs/watchdog.md) |
+| 📈 **Live telemetry** | Print `dist=23.4 speed=0.5` and get live curves in Thonny (10/30/60 s, pause, CSV export), and numeric stats for the AI to tune a controller. [Details](docs/telemetry.md) |
+| 📶 **Wi-Fi mode** | `wifi_setup` once over USB, then drive the robot through WebREPL while it moves. Thonny → USB → Wi-Fi chosen automatically. [Details](docs/wifi.md) |
+| ⚙️ **Bare metal C/C++** | Create, build and flash a Pico SDK program, read its console, and restore MicroPython, from the same AI tools. Pico W and Pico 2 W. [Details](docs/bare-metal.md) |
 | 🧾 **Per-project config** | `.thonny-ai.json` sets default folders, `ignore` patterns, the safe-stop code and an output cap, so one runaway `print` loop cannot flood the AI's context. |
 | 🧰 **Works without Thonny** | Thonny closed? The MCP server talks to the board over the serial port (MicroPython raw REPL), and can even listen to `main.py` without stopping it. |
 | 🪶 **Zero extra dependency** | Standard library + pyserial, which Thonny already bundles. |
@@ -134,6 +138,11 @@ warns about actions changing the board, colour-coded log with filter, details wi
 | `pull` | Download board files into a local folder (backup / recover code), never overwrites without `overwrite` |
 | `i2c_scan` | Scan an I2C bus and name the devices (IMU, OLED, distance sensor…) |
 | `gpio` | Read or drive one pin (digital in/out, pull-ups, ADC) |
+| `telemetry` | Listen to the program for N seconds and return per-series stats (last, min, max, mean, std, rate) from `name=value` or JSON lines |
+| `watchdog` | Status / on / off / configure the safety watchdog (Thonny open) |
+| `wifi_setup` | Over USB, configure the board's Wi-Fi and WebREPL so it can then be driven without a cable |
+| `bm_doctor` · `bm_new` · `bm_build` | Bare metal: check the C toolchain, create a Pico SDK project (`pico_w` / `pico2_w`), build it |
+| `bm_flash` · `bm_console` · `bm_restore_micropython` | Flash the `.uf2` (BOOTSEL handled), read the C program's USB console, go back to MicroPython |
 | `reset` | Soft reset: `boot.py` then `main.py` run again |
 | `shell` | Read Thonny's shell, i.e. what the user sees |
 | `open` | Open a local file in Thonny's editor |
@@ -276,8 +285,9 @@ points to a local `.py` file instead.
 
 ```bash
 python -m pip install -e ".[test]"
-PYTHONPATH=tests python -m unittest discover -s tests -v   # 116 tests, no board needed (panel tests need a display; skipped on headless CI)
+PYTHONPATH=tests python -m unittest discover -s tests -v   # 193 tests, no board needed (panel tests need a display; skipped on headless CI)
 python tests/e2e_thonny.py /path/to/thonny.exe             # 21 steps in a real Thonny window
+python tests/hardware_check.py                             # every tool on a real board (wheels in the air!)
 python bundle/build_portable.py thonny-X.Y.Z-windows-portable.zip
 ```
 

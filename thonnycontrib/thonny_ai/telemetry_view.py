@@ -1,6 +1,7 @@
 """Live telemetry from Thonny's program output."""
 
 import csv
+import math
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -14,6 +15,36 @@ VIEW_ID = "TelemetryView"
 REFRESH_MS = 100
 WINDOWS = ("10 s", "30 s", "60 s")
 ACCENTS = ("approved", "ok", "warn", "failed")
+
+
+def nice_axis(minimum, maximum, target=5):
+    """Round axis bounds and ticks on a 1 / 2 / 2.5 / 5 × 10^n step, e.g. 0, 0.25, 0.5…
+    Returns (low, high, ticks, step)."""
+    if minimum == maximum:
+        pad = abs(minimum) * 0.1 or 1.0
+        minimum, maximum = minimum - pad, maximum + pad
+    raw = (maximum - minimum) / (target - 1)
+    magnitude = 10 ** math.floor(math.log10(raw))
+    step = 10 * magnitude
+    for factor in (1, 2, 2.5, 5):
+        if factor * magnitude >= raw:
+            step = factor * magnitude
+            break
+    low = math.floor(minimum / step + 1e-9) * step
+    high = math.ceil(maximum / step - 1e-9) * step
+    count = int(round((high - low) / step))
+    ticks = [low + index * step for index in range(count + 1)]
+    return low, high, ticks, step
+
+
+def format_tick(value, step):
+    """As few decimals as the step needs (0.25 → 2 decimals, 5 → none); never prints -0."""
+    if abs(value) < step * 1e-6:
+        value = 0.0
+    decimals = 0
+    while decimals < 6 and abs(round(step, decimals) - step) > step * 1e-9:
+        decimals += 1
+    return f"{value:.{decimals}f}"
 
 
 class TelemetryView(ttk.Frame):
@@ -177,28 +208,23 @@ class TelemetryView(ttk.Frame):
             return
 
         values = [value for points in visible.values() for _, value in points]
-        minimum, maximum = min(values), max(values)
-        scale = max(abs(minimum), abs(maximum)) or 1.0
-        low, high = minimum / scale, maximum / scale
+        low, high, ticks, step = nice_axis(min(values), max(values))
         left, right, top, bottom = 80, width - 20, 8, height - 24
         axis = style.lookup("TLabel", "foreground") or palette["info"]
         grid = palette["idle"]
 
         def y_coordinate(value):
-            fraction = (value / scale - low) / (high - low) if low != high else 0.5
+            fraction = (value - low) / (high - low)
             return bottom - fraction * (bottom - top)
 
         def x_coordinate(offset):
             fraction = max(0.0, min(1.0, 1 + offset / seconds))
             return left + fraction * (right - left)
 
-        ticks = (minimum,) if low == high else (
-            (low + (high - low) * index / 4) * scale for index in range(5)
-        )
         for value in ticks:
             y = y_coordinate(value)
             canvas.create_line(left, y, right, y, fill=grid, dash=(2, 4))
-            canvas.create_text(left - 6, y, anchor="e", text=format(value, ".4g"), fill=axis)
+            canvas.create_text(left - 6, y, anchor="e", text=format_tick(value, step), fill=axis)
         divisions = 2 if width < 420 else 5
         for index in range(divisions + 1):
             offset = -seconds + seconds * index / divisions
