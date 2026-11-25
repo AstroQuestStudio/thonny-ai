@@ -9,7 +9,8 @@ import time
 import uuid
 
 from . import config
-from .backends import DeviceError, bridge_status, find_board_port, open_backend
+from .backends import DeviceError, bridge_status, find_board_port, open_backend, probe_webrepl, transport_mode
+from .wifi_setup import is_wifi_credentials, tool_wifi_setup
 
 MAX_TIMEOUT = 300.0
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", ".idea", ".vscode"}
@@ -159,26 +160,44 @@ def _remote_hashes(backend, paths):
 
 
 def tool_status(args):
+    lines = []
     try:
         st = bridge_status()
     except DeviceError as e:
-        return f"{e}\nWait a moment, or check that no dialog is open in Thonny."
-    lines = []
-    if st:
-        lines.append(
-            f"Thonny is open (thonny-ai plugin active). Interpreter: {st.get('backend_description')}"
-            f" | port: {st.get('port')} | connected: {st.get('connected')} | state: {st.get('state')}"
-            f" | approval required: {st.get('require_approval')}"
-        )
-        if st.get("current_editor_file"):
-            lines.append(f"File open in Thonny's editor: {st['current_editor_file']}")
+        lines.append(f"{e}\nWait a moment, or check that no dialog is open in Thonny.")
     else:
-        lines.append("Thonny is not running: tools will use the serial port directly.")
+        if st is None:
+            lines.append("Thonny is not running.")
+        else:
+            lines.append(
+                f"Thonny is open (thonny-ai plugin active). Interpreter: {st.get('backend_description')}"
+                f" | port: {st.get('port')} | connected: {st.get('connected')} | state: {st.get('state')}"
+                f" | approval required: {st.get('require_approval')}"
+            )
+            if st.get("current_editor_file"):
+                lines.append(f"File open in Thonny's editor: {st['current_editor_file']}")
     try:
-        port = find_board_port()
+        port = os.environ.get("THONNY_AI_SERIAL_PORT") or find_board_port()
         lines.append(f"MicroPython board on USB: {port}" if port else "No MicroPython board on USB.")
     except Exception as e:
         lines.append(f"USB detection failed: {e}")
+    try:
+        lines.append(f"Transport mode: {transport_mode()}")
+    except DeviceError as e:
+        lines.append(f"Transport mode: {e}")
+    try:
+        settings = config.webrepl_settings()
+        if settings.host:
+            endpoint = f"Wi-Fi WebREPL at {settings.host} (port {settings.port})"
+            try:
+                probe_webrepl(settings)
+                lines.append(f"{endpoint}: reachable and authenticated.")
+            except (DeviceError, config.ConfigError) as e:
+                lines.append(f"{endpoint}: {e}")
+        else:
+            lines.append("Wi-Fi WebREPL is not configured.")
+    except config.ConfigError as e:
+        lines.append(f"Wi-Fi WebREPL configuration error: {e}")
     lines.append(f"Project directory (relative paths): {project_dir()}")
     return "\n".join(lines)
 
@@ -234,12 +253,16 @@ def tool_ls(args):
 
 def tool_read(args):
     path = remote_path(args["path"])
+    if is_wifi_credentials(path):
+        raise DeviceError("WebREPL credentials are excluded from MCP file reads.")
     data = Operation("read", path).run(lambda b: b.read_file(path))
     return data.decode("utf-8", "replace")
 
 
 def tool_write(args):
     path = remote_path(args["path"])
+    if is_wifi_credentials(path):
+        raise DeviceError("Use wifi_setup to configure WebREPL credentials.")
     data = args["content"].encode("utf-8")
 
     def fn(b):
@@ -334,6 +357,8 @@ def tool_sync(args):
 
     plan = []
     for full, rel in _collect_local(local_dir, ignore):
+        if is_wifi_credentials(rel):
+            continue
         with open(full, "rb") as f:
             data = f.read()
         plan.append((_remote_target(remote_dir, rel), data, hashlib.sha256(data).hexdigest()))
@@ -351,7 +376,7 @@ def tool_sync(args):
             prefix = remote_dir.rstrip("/") + "/"
             for path, _ in _remote_files(b, remote_dir):
                 rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
-                if path not in wanted and not _is_ignored(rel, ignore):
+                if path not in wanted and not is_wifi_credentials(path) and not _is_ignored(rel, ignore):
                     extra.append(path)
             lines += [f"  DELETE {p}" for p in extra]
         if dry_run:
@@ -375,7 +400,7 @@ def tool_sync(args):
             b.reset()
             report += (
                 "\nSoft reset done: main.py restarts."
-                if b.name == "serial"
+                if b.name in ("serial", "wifi")
                 else "\nStop/Restart sent to Thonny (main.py runs on its own once Thonny is closed)."
             )
         return report
@@ -401,7 +426,7 @@ def tool_pull(args):
         todo = []
         for path, _ in files:
             rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
-            if _is_ignored(rel, ignore):
+            if is_wifi_credentials(path) or _is_ignored(rel, ignore):
                 continue
             full = os.path.abspath(os.path.join(base, *rel.split("/")))
             try:
@@ -720,7 +745,15 @@ TOOLS = {
     "status": (
         tool_status,
         "How the board is reached right now: Thonny open/connected (interpreter, port, state, "
-        "whether the user must approve actions) or direct serial. Call it first when unsure.",
+        "whether the user must approve actions), USB, and Wi-Fi/WebREPL. Call it first when unsure.",
+        _schema(),
+    ),
+    "wifi_setup": (
+        tool_wifi_setup,
+        "Set up the Pico W's Wi-Fi and WebREPL over USB, preserve existing boot.py code, "
+        "and return the board IP and client configuration. Close Thonny before running. "
+        "Set THONNY_AI_WIFI_SSID, THONNY_AI_WIFI_PASSWORD, and the WebREPL password in the MCP "
+        "server environment before calling. This stops the current board program.",
         _schema(),
     ),
     "info": (
@@ -868,6 +901,7 @@ TOOLS = {
 # (title, readOnly, destructive). "destructive" = can overwrite or delete something.
 ANNOTATIONS = {
     "status": ("Connection status", True, False),
+    "wifi_setup": ("Set up Wi-Fi over USB", False, True),
     "info": ("Board information", False, False),
     "exec": ("Run code on the board", False, True),
     "start": ("Start a background program", False, True),
