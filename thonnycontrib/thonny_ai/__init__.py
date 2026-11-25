@@ -41,8 +41,13 @@ def load_plugin():
     wb.set_default("thonny_ai.port", DEFAULT_PORT)
     port = int(wb.get_option("thonny_ai.port"))
 
-    core = BridgeCore(ThonnyHost(), require_approval=lambda: wb.get_option("thonny_ai.require_approval"))
+    host = ThonnyHost()
+    core = BridgeCore(host, require_approval=lambda: wb.get_option("thonny_ai.require_approval"))
     controller = Controller(core, port)
+    host.on_watchdog_trigger = controller.watchdog_triggered
+    host.on_watchdog_config_error = lambda error: controller.system_event(
+        t("watchdog_config_error", error=error), "denied"
+    )
     ThonnyAIView.controller = controller
     wb.add_view(ThonnyAIView, t("view_title"), "se")
     wb.add_command(

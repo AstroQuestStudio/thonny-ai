@@ -2,6 +2,7 @@
 
 import fnmatch
 import hashlib
+import json
 import os
 import posixpath
 import re
@@ -9,7 +10,7 @@ import time
 import uuid
 
 from . import config
-from .backends import DeviceError, bridge_status, find_board_port, open_backend
+from .backends import DeviceError, bridge_request, bridge_status, find_board_port, open_backend
 
 MAX_TIMEOUT = 300.0
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", ".idea", ".vscode"}
@@ -181,6 +182,14 @@ def tool_status(args):
         lines.append(f"USB detection failed: {e}")
     lines.append(f"Project directory (relative paths): {project_dir()}")
     return "\n".join(lines)
+
+
+def tool_watchdog(args):
+    if bridge_status() is None:
+        raise DeviceError("Watchdog is only available while Thonny is open.")
+    action = args.get("action", "status")
+    result = bridge_request("/watchdog", args, timeout=15 if action == "status" else 135)
+    return json.dumps({key: value for key, value in result.items() if key != "ok"}, ensure_ascii=False)
 
 
 def tool_exec(args):
@@ -829,6 +838,21 @@ TOOLS = {
         "that Ctrl-C leaves running. Warns when no safe-stop code is configured.",
         _schema(),
     ),
+    "watchdog": (
+        tool_watchdog,
+        "With Thonny open, read or change its automatic emergency stop. "
+        "Actions: status (default), on, off, configure. Configure accepts partial settings. "
+        "Returns effective settings and recent triggers. Changes last for the Thonny session.",
+        _schema(
+            {
+                "action": {"type": "string", "enum": ["status", "on", "off", "configure"], "default": "status"},
+                "enabled": _BOOL,
+                "patterns": {"type": "array", "items": _STR},
+                "heartbeat": {"type": ["string", "null"], "description": "Regex to renew the timer, or null to disable it."},
+                "heartbeat_timeout": {"type": "number", "exclusiveMinimum": 0, "description": "Seconds between heartbeats."},
+            }
+        ),
+    ),
     "i2c_scan": (
         tool_i2c_scan,
         "Scan an I2C bus and name the devices found (IMU, OLED, distance sensor, PWM driver…). "
@@ -881,6 +905,7 @@ ANNOTATIONS = {
     "pull": ("Download board files", False, False),
     "interrupt": ("Stop the program", False, False),
     "stop": ("Emergency stop", False, False),
+    "watchdog": ("Safety watchdog", False, False),
     "reset": ("Soft reset", False, False),
     "shell": ("Read Thonny's shell", True, False),
     "open": ("Open a file in Thonny", False, False),
