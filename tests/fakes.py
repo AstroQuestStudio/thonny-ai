@@ -30,6 +30,9 @@ class SandboxOS:
     def remove(self, path):
         os.remove(self._p(path))
 
+    def rename(self, source, destination):
+        os.replace(self._p(source), self._p(destination))
+
     def rmdir(self, path):
         os.rmdir(self._p(path))
 

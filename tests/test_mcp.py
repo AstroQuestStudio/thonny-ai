@@ -279,7 +279,8 @@ class ThonnyBackendTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_status_sees_thonny(self):
-        self.assertIn("Thonny is open", text(call("status")))
+        with mock.patch.object(tools, "find_board_port", return_value=None):
+            self.assertIn("Thonny is open", text(call("status")))
 
     def test_busy_thonny_is_not_mistaken_for_closed(self):
         real_status = self.host.status

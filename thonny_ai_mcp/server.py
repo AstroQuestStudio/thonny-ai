@@ -24,7 +24,7 @@ def handle(request):
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "thonny-ai", "version": __version__},
             "instructions": (
-                "Tools to drive a MicroPython board (e.g. Raspberry Pi Pico W) through Thonny. "
+                "Tools to drive a MicroPython board (e.g. Raspberry Pi Pico W) over Thonny, USB, or Wi-Fi. "
                 "Start with `status` or `info`. Use `exec` for short experiments, `start` + "
                 "`monitor` + `interrupt` for programs that loop forever, and `sync` to deploy a "
                 "project folder (then `monitor` to watch main.py). On a Pico W the onboard LED is "
