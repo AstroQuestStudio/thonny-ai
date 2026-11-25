@@ -116,6 +116,13 @@ class BridgeServerTest(unittest.TestCase):
         status, _ = request(self.port, "/shell", {"op": {"id": "r", "kind": "shell"}})
         self.assertEqual(status, 200)
 
+    def test_emergency_stop_never_waits_for_approval(self):
+        self.approval = True
+        for kind in ("stop", "interrupt"):
+            status, _ = request(self.port, "/interrupt", {"op": {"id": kind, "kind": kind}})
+            self.assertEqual(status, 200)
+            self.assertNotIn(("approval_needed", kind), self.events)
+
     def test_trust_session(self):
         self.approval = True
         threading.Thread(target=self._decide_later, args=("first", True, True)).start()

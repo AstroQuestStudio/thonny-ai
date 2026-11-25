@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thonny-ai"
-version = "0.1.1"
+version = "0.2.0"
 description = "MCP server and Thonny plugin: let Claude Code or any AI agent program Raspberry Pi Pico and ESP32 boards in MicroPython, visibly and with approval."
 readme = "README.md"
 license = "MIT"

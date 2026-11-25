@@ -99,6 +99,8 @@ On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shel
 | 🔁 **Long-running programs** | `start` a robot loop or a sensor stream, `monitor` what it prints while it runs, `interrupt` it. The AI can debug code that never returns. |
 | 🔌 **Auto-reconnect** | Replug the board, or survive a USB glitch: Thonny reconnects by itself. No more “Connection lost, use Stop/Restart”. A deliberate *Disconnect* is never undone. |
 | ⚡ **Smart sync** | `sync` uploads a project folder and only sends files whose SHA-256 changed, then restarts `main.py`. |
+| 🛑 **Robot safety** | `stop` interrupts the program **and** runs your `safe_stop` code (motors off): Ctrl-C alone leaves PWM outputs running. A timeout or `interrupt` does the same. Stop and interrupt are never blocked by the approval panel. |
+| 🧾 **Per-project config** | `.thonny-ai.json` sets default folders, `ignore` patterns, the safe-stop code and an output cap, so one runaway `print` loop cannot flood the AI's context. |
 | 🧰 **Works without Thonny** | Thonny closed? The MCP server talks to the board over the serial port (MicroPython raw REPL), and can even listen to `main.py` without stopping it. |
 | 🪶 **Zero extra dependency** | Standard library + pyserial, which Thonny already bundles. |
 | 🌍 **English / Français** | The UI follows Thonny's language. More languages welcome. |
@@ -115,11 +117,15 @@ On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shel
 | `info` | Board fact sheet: firmware, CPU MHz, free RAM and flash, unique id, Wi-Fi state, root files |
 | `exec` | Run MicroPython code and return prints and tracebacks; a timeout interrupts runaway loops |
 | `start` | Launch a program that runs forever (robot loop, data logger) without waiting |
-| `monitor` | Read what the running program prints, without stopping it |
-| `interrupt` | Stop the running program (Ctrl-C, escalating to Stop/Restart if needed) |
+| `monitor` | Read what the running program prints, without stopping it; `until` returns as soon as a regex shows up (e.g. `READY\|Traceback`) |
+| `interrupt` | Stop the running program (Ctrl-C, escalating to Stop/Restart if needed), then run the safe-stop code if configured |
+| `stop` | **Emergency stop** for robots: interrupt + `safe_stop` code so motors end up off (never waits for approval) |
 | `run_file` | Run a local `.py` file on the board without saving it there |
 | `ls` · `read` · `write` · `rm` | Manage the board's filesystem |
-| `sync` | Upload a folder (default `src/`), only changed files, then soft-reset (`dry_run`, `force`) |
+| `sync` | Upload a folder (default `src/`), only changed files, then soft-reset (`dry_run`, `force`, `ignore`, `delete`) |
+| `pull` | Download board files into a local folder (backup / recover code), never overwrites without `overwrite` |
+| `i2c_scan` | Scan an I2C bus and name the devices (IMU, OLED, distance sensor…) |
+| `gpio` | Read or drive one pin (digital in/out, pull-ups, ADC) |
 | `reset` | Soft reset: `boot.py` then `main.py` run again |
 | `shell` | Read Thonny's shell, i.e. what the user sees |
 | `open` | Open a local file in Thonny's editor |
@@ -237,12 +243,32 @@ and can require the student's (or teacher's) approval. It is MIT-licensed and fr
 | Folder for relative paths | `THONNY_AI_PROJECT` | MCP server working directory |
 | Disable serial fallback | `THONNY_AI_SERIAL_FALLBACK=0` | enabled |
 | Force a serial port | `THONNY_AI_SERIAL_PORT=COM3` | auto-detect |
+| Safe-stop code (motors off) | `THONNY_AI_SAFE_CODE`, or `safe_stop` / `safe_stop_file` in `.thonny-ai.json` | none |
+| Max characters returned per call | `THONNY_AI_MAX_OUTPUT`, or `max_output` in `.thonny-ai.json` | 20000 |
+
+### `.thonny-ai.json` (optional, in the project folder)
+
+```json
+{
+  "local_dir": "src",
+  "remote_dir": "/",
+  "ignore": ["*.md", "tests"],
+  "safe_stop": "import motors; motors.stop()",
+  "max_output": 20000
+}
+```
+
+All keys are optional. `local_dir`, `remote_dir` and `ignore` are the defaults of `sync` and `pull`
+(`ignore` also protects board files from `sync` with `delete`). `safe_stop` is MicroPython code run
+after `stop`, `interrupt` or a timed-out `exec`: put the pins that drive motors, servos or relays
+in their safe state there (a bare Ctrl-C does **not** stop PWM outputs on a Pico). `safe_stop_file`
+points to a local `.py` file instead.
 
 ## Development
 
 ```bash
 python -m pip install -e ".[test]"
-PYTHONPATH=tests python -m unittest discover -s tests -v   # 54 tests, no board needed
+PYTHONPATH=tests python -m unittest discover -s tests -v   # 96 tests, no board needed
 python tests/e2e_thonny.py /path/to/thonny.exe             # 21 steps in a real Thonny window
 python bundle/build_portable.py thonny-X.Y.Z-windows-portable.zip
 ```

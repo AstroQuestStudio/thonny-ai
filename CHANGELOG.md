@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+Robot-oriented release.
+
+- **`stop`** — emergency stop: interrupts the program and runs the project's safe-stop code
+  (`safe_stop` in `.thonny-ai.json`, or `THONNY_AI_SAFE_CODE`) so motors and actuators end up off.
+  Ctrl-C alone leaves PWM outputs running on a Pico. `interrupt` and a timed-out `exec` /
+  `run_file` run the safe-stop code too. `stop` and `interrupt` are never held up by the approval
+  panel.
+- **`.thonny-ai.json`** — per-project settings: `local_dir`, `remote_dir`, `ignore`, `safe_stop`,
+  `safe_stop_file`, `max_output`.
+- **`pull`** — download board files into a local folder (backup, recover code that only exists on
+  the board); never overwrites a different local file unless `overwrite` is set; refuses board
+  paths that would escape the local folder.
+- **`sync`** — `ignore` patterns and `delete` (remove board files that no longer exist locally,
+  respecting `ignore`; use `dry_run` first).
+- **`monitor`** — `until` (regular expression): returns as soon as the text appears, instead of
+  waiting for the whole duration.
+- **`i2c_scan`** and **`gpio`** — check wiring without writing code: devices found on an I2C bus
+  (named: IMU, OLED, distance sensors…), and digital / pull-up / ADC reads or an output write.
+- Output of one call is capped (default 20000 characters, head and tail kept) so a program that
+  prints in a loop cannot flood the AI's context.
+- MCP tool `title` and `annotations` (`readOnlyHint`, `destructiveHint`) so clients can
+  auto-approve read-only tools and warn on destructive ones.
+- 96 tests (was 54).
+
 ## 0.1.1 — 2026-09-23
 
 - Fix: a Thonny that is open but briefly busy is no longer mistaken for a closed one (which made

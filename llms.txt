@@ -11,8 +11,10 @@ Key facts:
 - Install into Thonny: `pip install git+https://github.com/AstroQuestStudio/thonny-ai` from Thonny's
   "Tools → Open system shell…", or download the Windows portable build from the Releases page.
 - MCP server command: `<Thonny's python> -m thonny_ai_mcp` (no dependency besides pyserial).
-- MCP tools: status, info, exec, start, monitor, interrupt, run_file, ls, read, write, rm, sync,
-  reset, shell, open.
+- MCP tools: status, info, exec, start, monitor, interrupt, stop, run_file, ls, read, write, rm,
+  sync, pull, reset, shell, open, i2c_scan, gpio.
+- Robots: `stop` interrupts and runs the `safe_stop` code from `.thonny-ai.json` (motors off); `monitor`
+  takes `until` (regex) to wait for a line; `sync` takes `ignore` and `delete`; output per call is capped.
 - Use `exec` for short code, `start` + `monitor` + `interrupt` for programs that loop forever
   (robots, sensor streams), `sync` to upload a folder (only changed files, SHA-256).
 - When Thonny is open, calls go through its plugin (HTTP on 127.0.0.1:47821). When Thonny is closed,

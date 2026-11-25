@@ -14,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULT_PORT = 47821
 PROTOCOL_VERSION = 1
 READ_ONLY_KINDS = frozenset({"status", "info", "ls", "read", "shell", "open", "monitor"})
+# Actions that only make the robot safer: never held up waiting for an approval click.
+ALWAYS_ALLOWED_KINDS = frozenset({"stop", "interrupt"})
 APPROVAL_TIMEOUT = 120.0
 MAX_KEPT_OPS = 300
 OP_PATHS = frozenset(
@@ -55,6 +57,10 @@ class Operation:
     @property
     def read_only(self):
         return self.kind in READ_ONLY_KINDS
+
+    @property
+    def always_allowed(self):
+        return self.kind in ALWAYS_ALLOWED_KINDS
 
     def decide(self, allowed, reason=""):
         if self._decided.is_set():
@@ -123,7 +129,7 @@ class BridgeCore:
 
     def authorize(self, op):
         if op.allowed is None:
-            if op.read_only or self.session_trust or not self.require_approval():
+            if op.read_only or op.always_allowed or self.session_trust or not self.require_approval():
                 op.auto_approved = True
                 op.decide(True)
                 self._emit("update", op)
