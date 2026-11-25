@@ -11,8 +11,11 @@ import uuid
 
 from . import config
 from .backends import DeviceError, bridge_request, bridge_status, find_board_port, open_backend
+from .telemetry import MAX_SERIES, LineBuffer, SeriesStats
 
 MAX_TIMEOUT = 300.0
+TELEMETRY_READ_SECONDS = 0.2
+TELEMETRY_MAX_POINTS = 50
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", ".idea", ".vscode"}
 
 
@@ -666,6 +669,62 @@ def tool_monitor(args):
     return Operation("monitor", f"{seconds:g} s", idle=False, passive=True).run(fn)
 
 
+def tool_telemetry(args):
+    seconds = args.get("seconds", 5)
+    if type(seconds) not in (int, float) or not 0 < seconds <= MAX_TIMEOUT:
+        raise DeviceError(f"`seconds` must be a number between 0 (exclusive) and {MAX_TIMEOUT:g}")
+    names = args.get("series")
+    if names is not None and (not isinstance(names, list) or any(not isinstance(n, str) for n in names)):
+        raise DeviceError("`series` must be an array of names")
+    selected = set(names) if names is not None else None
+    points = args.get("points", 0)
+    if type(points) is not int or not 0 <= points <= TELEMETRY_MAX_POINTS:
+        raise DeviceError(f"`points` must be an integer between 0 and {TELEMETRY_MAX_POINTS}")
+
+    def collect(backend):
+        passive = getattr(backend, "passive", False)
+        lines = LineBuffer()
+        series = {}
+        series_limited = False
+        start = time.monotonic()
+        elapsed = 0.0
+        running = None
+        while elapsed < seconds:
+            interval = min(TELEMETRY_READ_SECONDS, seconds - elapsed)
+            if passive:
+                out = backend.listen(interval)
+            else:
+                out, _, running = backend.monitor(interval)
+            elapsed = time.monotonic() - start
+            for fields in lines.feed(out):
+                for name, value in fields.items():
+                    if selected is not None and name not in selected:
+                        continue
+                    if name not in series:
+                        if len(series) >= MAX_SERIES:
+                            series_limited = True
+                            continue
+                        series[name] = SeriesStats(points)
+                    series[name].add(elapsed, value)
+            if running is False:
+                break
+            elapsed = time.monotonic() - start
+
+        return json.dumps(
+            {
+                "backend": backend.name,
+                "elapsed_seconds": elapsed,
+                "running": running,
+                "series": {name: stats.summary() for name, stats in series.items()},
+                "series_limited": series_limited,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    return Operation("telemetry", f"{seconds:g} s", idle=False, passive=True).run(collect)
+
+
 def _stop_program(b):
     """Ctrl-C the running program, then put the hardware in its safe state."""
     stopped = b.ensure_idle()
@@ -762,6 +821,21 @@ TOOLS = {
         "so it also works for main.py running on its own after boot. Pass `until` (a regular "
         "expression) to return as soon as that text appears, e.g. until='READY|Traceback'.",
         _schema({"seconds": _NUM, "until": _STR}),
+    ),
+    "telemetry": (
+        tool_telemetry,
+        "Read numeric program output without interrupting it (Thonny or passive USB serial). "
+        "Print name=value, name:value, or a JSON object on each line. Returns JSON with last, "
+        "min, max, mean, population standard deviation, count and estimated rate in Hz per "
+        "series. Filter by exact series names and optionally include the N latest points per "
+        "series as [seconds since capture started, value].",
+        _schema(
+            {
+                "seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": MAX_TIMEOUT, "default": 5},
+                "series": {"type": "array", "items": _STR},
+                "points": {"type": "integer", "minimum": 0, "maximum": TELEMETRY_MAX_POINTS, "default": 0},
+            }
+        ),
     ),
     "run_file": (
         tool_run_file,
@@ -896,6 +970,7 @@ ANNOTATIONS = {
     "exec": ("Run code on the board", False, True),
     "start": ("Start a background program", False, True),
     "monitor": ("Watch program output", True, False),
+    "telemetry": ("Read telemetry statistics", True, False),
     "run_file": ("Run a local file on the board", False, True),
     "ls": ("List board files", True, False),
     "read": ("Read a board file", True, False),

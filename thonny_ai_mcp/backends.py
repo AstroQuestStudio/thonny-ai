@@ -7,6 +7,7 @@
 """
 
 import base64
+import codecs
 import json
 import os
 import re
@@ -89,6 +90,7 @@ class ThonnyBackend:
 
     def __init__(self, op):
         self.op = op
+        self._telemetry_cursor = None
 
     def _post(self, path, payload=None, timeout=15.0):
         return bridge_request(path, {**(payload or {}), "op": self.op}, timeout)
@@ -111,10 +113,16 @@ class ThonnyBackend:
         )["cursor"]
 
     def monitor(self, seconds):
+        # Telemetry starts at the current log head and leaves the monitor cursor alone.
+        telemetry = self.op.get("kind") == "telemetry"
+        since = self._telemetry_cursor if telemetry else ThonnyBackend.cursor
         r = self._post(
-            "/monitor", {"seconds": seconds, "since": ThonnyBackend.cursor}, timeout=seconds + 15
+            "/monitor", {"seconds": seconds, "since": since}, timeout=seconds + 15
         )
-        ThonnyBackend.cursor = r["cursor"]
+        if telemetry:
+            self._telemetry_cursor = r["cursor"]
+        else:
+            ThonnyBackend.cursor = r["cursor"]
         return _clean(r["stdout"]), _clean(r["stderr"]), r["running"]
 
     def write_file(self, path, data):
@@ -214,15 +222,16 @@ class SerialBackend:
         self.running = False
         self._phase = None
         self._pending = b""
+        self._console_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         if not passive:
             self._enter_raw_repl()
 
     def listen(self, seconds):
         deadline = time.time() + seconds
-        data = b""
+        data = bytearray()
         while time.time() < deadline:
-            data += self.ser.read(512)
-        return data.decode("utf-8", "replace")
+            data.extend(self.ser.read(512))
+        return self._console_decoder.decode(data)
 
     def _read_until(self, marker, timeout):
         buf = b""
@@ -379,6 +388,10 @@ def open_backend(op, passive=False):
         if _session is not None:
             return _session
         return SerialBackend(passive=passive)
+    if op.get("kind") == "telemetry":
+        if not st.get("connected"):
+            raise DeviceError("Thonny is open but its interpreter is disconnected")
+        return ThonnyBackend(op)
     if _session is not None:  # Thonny was opened: hand the port over to it
         _session.close(force=True)
     if st.get("connected"):

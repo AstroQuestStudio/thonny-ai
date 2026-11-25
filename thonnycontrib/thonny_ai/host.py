@@ -1,6 +1,7 @@
 """Adapter between the bridge and Thonny. Tk is not thread-safe: every access to
 Thonny goes through the main loop via MainThread.call()."""
 
+import logging
 import queue
 import threading
 import time
@@ -17,6 +18,7 @@ AI_TAG = "thonny_ai_command"
 LOG_MAX_ENTRIES = 5000
 WATCHDOG_POLL_MS = 100
 PROGRAM_COMMANDS = {"Run", "run", "Debug", "debug", "FastDebug", "fast_debug", "execute_source"}
+logger = logging.getLogger(__name__)
 
 
 class MainThread:
@@ -69,6 +71,7 @@ class ThonnyHost:
         self._watchdog_command = None
         self._watchdog_dirs = []
         self._watchdog_config_error = None
+        self._output_listeners = set()
         wb = get_workbench()
         wb.bind("CommandAccepted", self._on_command_accepted, True)
         wb.bind("ProgramOutput", self._on_output, True)
@@ -90,6 +93,10 @@ class ThonnyHost:
         self._load_watchdog_config(self._watchdog_dirs)
         self._watchdog_command = command.id
         self.watchdog.begin()
+    def subscribe_output(self, listener):
+        """Subscribe to visible program output on the Tk thread; return an unsubscribe callback."""
+        self._output_listeners.add(listener)
+        return lambda: self._output_listeners.discard(listener)
 
     def _append_log(self, stream, data):
         with self._log_lock:
@@ -97,6 +104,11 @@ class ThonnyHost:
             self._log.append((self._seq, stream, data))
             if len(self._log) > LOG_MAX_ENTRIES:
                 del self._log[: len(self._log) - LOG_MAX_ENTRIES]
+        for listener in tuple(self._output_listeners):
+            try:
+                listener(stream, data)
+            except Exception:
+                logger.exception("Program output listener failed")
 
     def _on_output(self, msg):
         stream = getattr(msg, "stream_name", "stdout")
