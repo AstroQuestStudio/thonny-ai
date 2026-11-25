@@ -24,7 +24,13 @@ Robot-oriented release.
   prints in a loop cannot flood the AI's context.
 - MCP tool `title` and `annotations` (`readOnlyHint`, `destructiveHint`) so clients can
   auto-approve read-only tools and warn on destructive ones.
-- 96 tests (was 54).
+- **New panel**: live board status line (interpreter, port, connected, ready/running) with a status
+  dot; red **STOP** button and *Tools → Emergency stop robot* (interrupts, then runs the project's
+  safe-stop code found in `.thonny-ai.json`); approval card that tells whether the action changes the
+  board; colour-coded log (readable on light and dark themes) with text filter, *Errors only*, *Clear*,
+  and a footer with counts; details window with Code / Result tabs, monospaced, with Copy; right-click
+  menu to copy code or result.
+- 116 tests (was 54).
 
 ## 0.1.1 — 2026-09-23
 

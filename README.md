@@ -100,6 +100,7 @@ On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shel
 | 🔌 **Auto-reconnect** | Replug the board, or survive a USB glitch: Thonny reconnects by itself. No more “Connection lost, use Stop/Restart”. A deliberate *Disconnect* is never undone. |
 | ⚡ **Smart sync** | `sync` uploads a project folder and only sends files whose SHA-256 changed, then restarts `main.py`. |
 | 🛑 **Robot safety** | `stop` interrupts the program **and** runs your `safe_stop` code (motors off): Ctrl-C alone leaves PWM outputs running. A timeout or `interrupt` does the same. Stop and interrupt are never blocked by the approval panel. |
+| 🖥️ **Modern panel** | Live board status (port, connected, ready/running), a red **STOP** button (also in the Tools menu), colour-coded log that follows light and dark themes, filter and *errors only*, details window with Code / Result tabs and Copy, right-click copy, a warning on approval requests that change the board. |
 | 🧾 **Per-project config** | `.thonny-ai.json` sets default folders, `ignore` patterns, the safe-stop code and an output cap, so one runaway `print` loop cannot flood the AI's context. |
 | 🧰 **Works without Thonny** | Thonny closed? The MCP server talks to the board over the serial port (MicroPython raw REPL), and can even listen to `main.py` without stopping it. |
 | 🪶 **Zero extra dependency** | Standard library + pyserial, which Thonny already bundles. |
@@ -108,6 +109,13 @@ On macOS / Linux use the `python3` Thonny runs with (*Tools → Open system shel
 ![AI code in Thonny's shell](docs/img/shell-echo.png)
 
 ![AI Assistant panel asking for approval](docs/img/approval-panel.png)
+
+The 0.2.0 panel, light and dark themes: live board status, red **STOP** button, approval card that
+warns about actions changing the board, colour-coded log with filter, details window.
+
+| Light | Dark |
+|---|---|
+| ![Panel, light theme](docs/img/panel-light.png) | ![Panel, dark theme](docs/img/panel-dark.png) |
 
 ## MCP tools
 
@@ -268,7 +276,7 @@ points to a local `.py` file instead.
 
 ```bash
 python -m pip install -e ".[test]"
-PYTHONPATH=tests python -m unittest discover -s tests -v   # 96 tests, no board needed
+PYTHONPATH=tests python -m unittest discover -s tests -v   # 116 tests, no board needed (panel tests need a display; skipped on headless CI)
 python tests/e2e_thonny.py /path/to/thonny.exe             # 21 steps in a real Thonny window
 python bundle/build_portable.py thonny-X.Y.Z-windows-portable.zip
 ```

@@ -53,6 +53,13 @@ def load_plugin():
         group=180,
     )
     wb.add_command(
+        "thonny_ai_stop",
+        "tools",
+        t("menu_stop"),
+        controller.emergency_stop,
+        group=180,
+    )
+    wb.add_command(
         "thonny_ai_show_panel",
         "tools",
         t("menu_panel"),

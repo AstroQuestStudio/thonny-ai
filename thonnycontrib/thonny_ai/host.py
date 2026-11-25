@@ -172,27 +172,28 @@ class ThonnyHost:
     # ------------------------------------------------------------ API used by BridgeCore
 
     def status(self):
-        def fn():
-            wb = get_workbench()
-            runner = get_runner()
-            proxy = runner.get_backend_proxy()
-            backend = wb.get_option("run.backend_name")
-            spec = wb.get_backends().get(backend)
-            connected = proxy is not None and (
-                proxy.is_connected() if hasattr(proxy, "is_connected") else True
-            )
-            editor = wb.get_editor_notebook().get_current_editor()
-            return {
-                "thonny": True,
-                "backend": backend,
-                "backend_description": getattr(spec, "description", backend),
-                "port": getattr(proxy, "_port", None) or wb.get_option(f"{backend}.port"),
-                "connected": connected,
-                "state": runner.get_state(),
-                "current_editor_file": editor.get_filename() if editor else None,
-            }
+        return self.main.call(self.status_now)
 
-        return self.main.call(fn)
+    def status_now(self):
+        """Same as status(), for code already running in Thonny's UI thread (the panel)."""
+        wb = get_workbench()
+        runner = get_runner()
+        proxy = runner.get_backend_proxy()
+        backend = wb.get_option("run.backend_name")
+        spec = wb.get_backends().get(backend)
+        connected = proxy is not None and (
+            proxy.is_connected() if hasattr(proxy, "is_connected") else True
+        )
+        editor = wb.get_editor_notebook().get_current_editor()
+        return {
+            "thonny": True,
+            "backend": backend,
+            "backend_description": getattr(spec, "description", backend),
+            "port": getattr(proxy, "_port", None) or wb.get_option(f"{backend}.port"),
+            "connected": connected,
+            "state": runner.get_state(),
+            "current_editor_file": editor.get_filename() if editor else None,
+        }
 
     def exec_code(self, code, timeout, echo=False, quiet=False, echo_text=None):
         if not self._exec_lock.acquire(timeout=2):
